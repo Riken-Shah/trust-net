@@ -51,6 +51,25 @@ Integration tests against a real Supabase/PostgreSQL instance:
 npm run test:integration
 ```
 
+### Marketplace Ingestion Worker
+
+The repo includes a dedicated marketplace ingestion worker that polls Nevermined marketplace sellers, enriches plan metadata, and upserts into `agents`, `plans`, `agent_services`, plus `blockchain_sync` checkpoints.
+
+```bash
+cp .env.example .env
+npm install
+npm run ingest:once     # single ingestion cycle
+npm run ingest:worker   # interval worker loop
+```
+
+Key env vars:
+- `MARKETPLACE_API_URL` (default: `https://nevermined.ai/hackathon/register/api/marketplace?side=all`)
+- `INGEST_INTERVAL_SECONDS` (default: `300`)
+- `INGEST_HTTP_TIMEOUT_MS` (default: `15000`)
+- `INGEST_RETRY_COUNT` (default: `2`)
+- `INGEST_PLAN_ENRICH_CONCURRENCY` (default: `5`)
+- `NVM_API_KEY` and `NVM_ENVIRONMENT` (required for plan enrichment)
+
 ## Agents
 
 | Agent | Description | Protocols | Link |
