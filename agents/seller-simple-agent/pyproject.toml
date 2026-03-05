@@ -15,7 +15,6 @@ openai = "^1.40.0"
 python-dotenv = "^1.0.0"
 langchain-openai = ">=0.3.0"
 langgraph = ">=0.3.0"
-trust-net-db = { path = "../../packages/trust-net-db", develop = true }
 
 [tool.poetry.extras]
 agentcore = ["bedrock-agentcore"]

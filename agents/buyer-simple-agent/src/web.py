@@ -31,7 +31,6 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.responses import FileResponse
 
 from strands.models.openai import OpenAIModel
-from trust_net_db import close_db_pool, init_db_pool, ping_db
 
 from .log import enable_web_logging, get_logger, log
 from .registration_server import RegistrationExecutor, _build_buyer_agent_card
@@ -92,17 +91,7 @@ app = FastAPI(title="Buyer Agent Web")
 
 @app.on_event("startup")
 async def _start_log_dispatcher():
-    pool = await init_db_pool()
-    await ping_db()
-    app.state.db_pool = pool
-    log(_logger, "WEB", "STARTUP", "Supabase DB pool ready")
     asyncio.create_task(_log_dispatcher())
-
-
-@app.on_event("shutdown")
-async def _shutdown_db_pool():
-    await close_db_pool()
-    log(_logger, "WEB", "SHUTDOWN", "Supabase DB pool closed")
 
 
 # CORS for frontend dev server

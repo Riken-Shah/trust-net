@@ -30,6 +30,27 @@ NVM_PLAN_ID=your-plan-id              # Create in Nevermined App > My Pricing Pl
 OPENAI_API_KEY=sk-your-key            # For LLM-powered agents
 ```
 
+### Shared DB Service (`src/`)
+
+Supabase/PostgreSQL pooling is now provided by a root TypeScript service.
+
+```bash
+cp .env.example .env
+npm install
+npm run dev                 # starts DB service (health endpoints below)
+npm run build && npm start  # production build + run
+```
+
+Health endpoints:
+- `GET /health/live`
+- `GET /health/ready`
+
+Integration tests against a real Supabase/PostgreSQL instance:
+
+```bash
+npm run test:integration
+```
+
 ## Agents
 
 | Agent | Description | Protocols | Link |
