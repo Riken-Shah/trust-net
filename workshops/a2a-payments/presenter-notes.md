@@ -96,55 +96,50 @@ Buyer Agent                        Seller Agent
 
 **Open `python/seller.py`**
 
-Walk through the three parts:
+Walk through the two parts:
 
-#### Part 1: The Executor
-
-> "The Executor is your business logic. It receives the message and emits events."
-
-```python
-class MyExecutor:
-    async def execute(self, context, event_queue):
-        query = context.message.parts[0].text
-        tool = "research" if "research" in query.lower() else "search"
-        credits_used = CREDIT_MAP.get(tool, 1)
-
-        await event_queue.enqueue_event({
-            "status": {"state": "completed"},
-            "final": True,
-            "metadata": {"creditsUsed": str(credits_used)},
-        })
-```
-
-> "IMPORTANT: the final event must include `creditsUsed` in metadata — that's what triggers settlement. It's a plain dict, not a typed class."
-
-> "Also important: tools in A2A mode are plain functions. No `@requires_payment` decorator. Payment validation happens at the message level via the handler."
-
-#### Part 2: The Agent Card
+#### Part 1: The Agent Card
 
 ```python
 agent_card = build_payment_agent_card(
     base_card={"name": "Data Seller", "url": f"http://localhost:{PORT}", ...},
-    plan_id=PLAN_ID,
-    agent_id=AGENT_ID,
-    default_credits=1,
+    payment_metadata={
+        "paymentType": "dynamic",
+        "credits": 1,
+        "planId": PLAN_ID,
+        "agentId": AGENT_ID,
+    },
 )
 ```
 
-> "The Agent Card is your storefront. It tells buyers: here's what I do (skills) and here's what I charge (payment extension)."
+> "The Agent Card is your storefront. Buyers discover it at `/.well-known/agent.json` — it advertises what your agent does (skills) and what it costs (payment extension)."
 
-#### Part 3: The Handler
+#### Part 2: The Agent Function
 
 ```python
-handler = PaymentsRequestHandler(payments, agent_card, 1, MyExecutor())
+@a2a_requires_payment(
+    payments=payments,
+    agent_card=agent_card,
+    default_credits=1,
+)
+async def my_agent(context) -> AgentResponse:
+    text = context.get_user_input()
+    tool = "research" if "research" in text.lower() else "search"
+    credits_used = CREDIT_MAP.get(tool, 1)
+    result = f"[{tool}] Result for: {text}"
+    return AgentResponse(text=result, credits_used=credits_used)
+
+my_agent.serve(port=PORT)
 ```
 
-> "One line. The handler validates x402 tokens before calling your executor. If the token is invalid, `execute()` is never called."
+> "The decorator handles everything: token validation, 402 responses, credit settlement. You just write your logic and return an `AgentResponse` with the text and how many credits it cost."
+
+> "Notice there's no Executor class, no event queue, no handler. The decorator abstracts all of that. You return `credits_used` in the response — the decorator settles them on-chain."
 
 **Show TypeScript equivalent (`ts/seller.ts`):**
-- Same Executor pattern but with typed interfaces (`AgentExecutor`, `RequestContext`, `ExecutionEventBus`)
-- `TaskStatusUpdateEvent` is a typed object in TS (vs plain dict in Python)
-- `payments.a2a.start(...)` to launch the server
+- Uses `payments.a2a.start(...)` with an executor object
+- Executor has `execute(context, eventBus)` — publishes status events
+- Final event includes `metadata: { creditsUsed: 5 }` for settlement
 
 ---
 
@@ -152,35 +147,52 @@ handler = PaymentsRequestHandler(payments, agent_card, 1, MyExecutor())
 
 **Open `python/buyer.py`**
 
-Walk through the 5 steps:
+Walk through the steps:
 
-1. **Discover**: `GET /.well-known/agent.json`
+1. **Discover**: `GET /.well-known/agent-card.json`
    ```python
-   card = httpx.get(f"{SELLER_URL}/.well-known/agent.json").json()
+   card = httpx.get(f"{SELLER_URL}/.well-known/agent-card.json").json()
    ```
 
 2. **Parse payment extension**: Extract `planId` and `agentId`
    ```python
-   payment_ext = card["extensions"][0]["params"]
+   extensions = card.get("capabilities", {}).get("extensions", [])
+   payment_ext = next(
+       (ext["params"] for ext in extensions if ext.get("uri") == "urn:nevermined:payment"),
+       None,
+   )
    plan_id = payment_ext["planId"]
    ```
 
-3. **Subscribe**: `payments.plans.order_plan(plan_id)`
+3. **Subscribe** (if needed): `payments.plans.order_plan(plan_id)`
 
-4. **Get token**: `payments.x402.get_x402_access_token(plan_id, agent_id)`
-
-5. **Send paid message**:
+4. **Send paid message** (PaymentsClient handles x402 tokens internally):
    ```python
-   client = PaymentsClient(url=SELLER_URL, payments=payments, ...)
-   async for event in client.send_message_stream("Search for climate data"):
-       if event.status.state == "completed":
-           print(f"Credits used: {event.metadata.get('creditsUsed')}")
+   from a2a.types import MessageSendParams, Message, TextPart
+
+   client = PaymentsClient(
+       agent_base_url=SELLER_URL, payments=payments,
+       agent_id=agent_id, plan_id=plan_id,
+   )
+
+   params = MessageSendParams(
+       message=Message(
+           message_id=str(uuid4()), role="user",
+           parts=[TextPart(text="Search for climate data")],
+       )
+   )
+
+   async for event in client.send_message_stream(params):
+       task, status_event = event  # tuple: (Task, TaskStatusUpdateEvent)
+       if task.status.state == "completed":
+           print(f"Credits used: {task.metadata.get('creditsUsed')}")
    ```
+
+> "PaymentsClient handles x402 tokens internally — you don't call `get_x402_access_token` yourself. And `send_message_stream` takes a `MessageSendParams` object, not a plain string."
 
 **Show TypeScript equivalent (`ts/buyer.ts`):**
 - Uses `payments.a2a.getClient(...)` to create the A2A client
 - Supports both `sendA2AMessage` (single response) and `sendA2AMessageStream` (SSE)
-- Payment extension is at `card.capabilities.extensions` (different path than Python)
 
 ---
 
