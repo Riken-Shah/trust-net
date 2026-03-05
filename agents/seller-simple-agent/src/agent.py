@@ -22,6 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from strands.models.openai import OpenAIModel
+from trust_net_db import close_db_pool, init_db_pool, ping_db
 
 from payments_py.x402.strands import extract_payment_required
 
@@ -46,6 +47,18 @@ app = FastAPI(
     title="Kit B - Data Selling Agent (Python)",
     description="Strands AI agent with x402 payment-protected data tools",
 )
+
+
+@app.on_event("startup")
+async def _startup_db_pool() -> None:
+    pool = await init_db_pool()
+    await ping_db()
+    app.state.db_pool = pool
+
+
+@app.on_event("shutdown")
+async def _shutdown_db_pool() -> None:
+    await close_db_pool()
 
 
 class DataRequest(BaseModel):
