@@ -11,6 +11,11 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from payments_py import Payments, PaymentOptions
 from payments_py.x402.fastapi import PaymentMiddleware
+from dotenv import load_dotenv
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+load_dotenv()
 
 payments = Payments.get_instance(
     PaymentOptions(

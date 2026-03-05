@@ -6,17 +6,22 @@ The subscriber experience: check balance, buy plan, get token, consume.
 
 import os
 import httpx
+import urllib3
 from payments_py import Payments, PaymentOptions
+from dotenv import load_dotenv
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+load_dotenv()
 
 payments = Payments.get_instance(
     PaymentOptions(
-        nvm_api_key=os.getenv("NVM_API_KEY", ""),  # subscriber key
+        nvm_api_key=os.getenv("NVM_SUBSCRIBER_API_KEY", ""),  # subscriber key
         environment=os.getenv("NVM_ENVIRONMENT", "sandbox"),
     )
 )
 
 PLAN_ID = os.getenv("NVM_PLAN_ID", "")
-SERVER_URL = "http://localhost:3000"
+SERVER_URL = "http://localhost:4000"
 
 
 def main():
@@ -35,7 +40,7 @@ def main():
     print("Token obtained")
 
     # 4. Use the token
-    with httpx.Client() as client:
+    with httpx.Client(timeout=30.0) as client:
         response = client.post(
             f"{SERVER_URL}/ask",
             headers={"payment-signature": access_token},

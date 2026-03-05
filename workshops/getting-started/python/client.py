@@ -15,8 +15,6 @@ from dotenv import load_dotenv
 from payments_py import Payments, PaymentOptions
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-
 load_dotenv()
 
 payments = Payments.get_instance(

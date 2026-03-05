@@ -1,21 +1,18 @@
 """
-Nevermined Lab: Payment Plans — Register Agent + Plan
+Nevermined Lab: Payment Plans — Register Agent + Plan (Fiat/Stripe)
 
-Complete registration: create an agent and attach a payment plan
-in a single call.
+Same as register_agent.py but using fiat pricing (USD via Stripe).
+Subscribers pay with credit card through a Stripe checkout flow.
 """
 
 import os
 import urllib3
 from payments_py import Payments, PaymentOptions
-from payments_py.plans import get_erc20_price_config, get_fixed_credits_config
+from payments_py.plans import get_fiat_price_config, get_fixed_credits_config
 from dotenv import load_dotenv
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 load_dotenv()
-
-# USDC on Base Sepolia (sandbox)
-USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
 
 payments = Payments.get_instance(
     PaymentOptions(
@@ -28,9 +25,9 @@ builder_address = payments.account_address
 
 result = payments.agents.register_agent_and_plan(
     agent_metadata={
-        "name": "My AI Agent",
-        "description": "AI analysis service",
-        "tags": ["ai", "analysis"],
+        "name": "My AI Agent (Fiat)",
+        "description": "AI analysis service with Stripe payments",
+        "tags": ["ai", "analysis", "fiat"],
     },
     agent_api={
         "endpoints": [{"POST": "https://your-server.com/ask"}],
@@ -38,12 +35,11 @@ result = payments.agents.register_agent_and_plan(
     },
     plan_metadata={
         "name": "Pro Plan",
-        "description": "100 credits for 10 USDC",
+        "description": "100 credits for $9.99",
     },
-    price_config=get_erc20_price_config(
-        10_000_000,  # 10 USDC (6 decimals)
-        USDC_ADDRESS,
-        builder_address,
+    price_config=get_fiat_price_config(
+        amount=999,  # $9.99 in cents
+        receiver=builder_address,
     ),
     credits_config=get_fixed_credits_config(100, 1),
     access_limit="credits",

@@ -10,7 +10,12 @@ Five ways to price your AI agent:
 """
 
 import os
+import urllib3
+from dotenv import load_dotenv
 from payments_py import Payments, PaymentOptions
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+load_dotenv()
 
 payments = Payments.get_instance(
     PaymentOptions(
@@ -55,17 +60,20 @@ free_trial = payments.plans.get_fixed_credits_config(
 
 # ─── Price Configurations ────────────────────────────────────────
 
+builder_address = payments.account_address
+USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # USDC on Base Sepolia
+
 # Crypto: price in USDC (6 decimals → $10 = 10_000_000)
 crypto_price = payments.plans.get_crypto_price_config(
-    amount=10_000_000,  # $10 USDC
-    receiver_address="0xYourWalletAddress",
-    token_address="0x036CbD53842c5426634e7929541eC2318f3dCF7e",  # USDC on Base Sepolia
+    10_000_000,      # $10 USDC
+    builder_address,
+    USDC_ADDRESS,
 )
 
 # Fiat: price in cents via Stripe ($10.00 = 1000 cents)
 fiat_price = payments.plans.get_fiat_price_config(
-    amount_cents=1000,  # $10.00
-    receiver_address="0xYourWalletAddress",
+    1000,            # $10.00
+    builder_address,
 )
 
 print("All plan types configured successfully")

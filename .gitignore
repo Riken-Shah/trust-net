@@ -77,3 +77,4 @@ poetry.lock
 # Misc
 *.bak
 *.tmp
+venv/
