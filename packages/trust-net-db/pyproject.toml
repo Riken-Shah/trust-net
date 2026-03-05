@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "trust-net-db"
+version = "0.1.0"
+description = "Shared Supabase/Postgres connection service for trust-net agents"
+authors = ["Trust Net Team <devnull@trust-net.local>"]
+packages = [{ include = "trust_net_db" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+asyncpg = "^0.30.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
