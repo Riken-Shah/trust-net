@@ -26,7 +26,7 @@ client = "src.client:main"
 demo = "src.demo:main"
 agent-a2a = "src.agent_a2a:main"
 agent-a2a-agentcore = "src.agent_a2a_agentcore:main"
-agent-langgraph = "src.agent_langgraph:main"
+agent-langgraph = "src.server_langgraph:main"
 
 [build-system]
 requires = ["poetry-core"]
