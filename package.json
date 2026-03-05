@@ -6,12 +6,17 @@
   "description": "Shared Supabase/PostgreSQL connection pool service for trust-net",
   "scripts": {
     "dev": "tsx src/server.ts",
+    "ingest:once": "tsx src/ingestion/runOnce.ts",
+    "ingest:worker": "tsx src/ingestion/worker.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "check": "tsc --noEmit",
-    "test:integration": "node --test --import tsx src/db/pool.integration.test.ts"
+    "test:integration": "node --test --import tsx src/db/pool.integration.test.ts",
+    "test:unit": "node --test --import tsx \"src/ingestion/__tests__/*.test.ts\"",
+    "test:ingestion:integration": "node --test --import tsx src/ingestion/ingestion.integration.test.ts"
   },
   "dependencies": {
+    "@nevermined-io/payments": "1.1.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "pg": "^8.13.1"

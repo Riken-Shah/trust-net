@@ -39,8 +39,8 @@ function getTrimmedValue(name: DbEnvKey): string {
 }
 
 function applyDbEnv(overrides: Partial<Record<DbEnvKey, string | undefined>>): void {
-  for (const key of DB_ENV_KEYS) {
-    const value = overrides[key]
+  const entries = Object.entries(overrides) as Array<[DbEnvKey, string | undefined]>
+  for (const [key, value] of entries) {
     if (value === undefined) {
       delete process.env[key]
       continue
@@ -147,7 +147,6 @@ test('initDbPool resolves DATABASE_URL password placeholders and pings Supabase'
     DB_NAME: undefined,
     DB_USER: undefined,
     DB_POOL_MODE: 'transaction',
-    DB_SSL: 'true',
   })
 
   const pool = await initDbPool()
@@ -160,7 +159,6 @@ test('pingDb verifies SELECT 1 result', async () => {
     DATABASE_URL: buildPlaceholderDatabaseUrl(connectionParts),
     SUPABASE_PASSWORD: connectionParts.password,
     DB_POOL_MODE: 'transaction',
-    DB_SSL: 'true',
   })
 
   await initDbPool()
@@ -174,7 +172,6 @@ test('concurrent initDbPool calls return one shared pool instance', async () => 
     DATABASE_URL: buildPlaceholderDatabaseUrl(connectionParts),
     SUPABASE_PASSWORD: connectionParts.password,
     DB_POOL_MODE: 'transaction',
-    DB_SSL: 'true',
   })
 
   const pools = await Promise.all(Array.from({ length: 20 }, () => initDbPool()))
@@ -190,7 +187,6 @@ test('closeDbPool shuts down the pool and allows re-initialization', async () =>
     DATABASE_URL: buildPlaceholderDatabaseUrl(connectionParts),
     SUPABASE_PASSWORD: connectionParts.password,
     DB_POOL_MODE: 'transaction',
-    DB_SSL: 'true',
   })
 
   const firstPool = await initDbPool()
@@ -213,7 +209,6 @@ test('fallback DB_* env configuration connects successfully', async () => {
     DB_NAME: connectionParts.dbName,
     DB_USER: connectionParts.user,
     DB_POOL_MODE: 'transaction',
-    DB_SSL: 'true',
   })
 
   const pool = await initDbPool()
