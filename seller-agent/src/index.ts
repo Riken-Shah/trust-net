@@ -112,6 +112,50 @@ const GET_REVIEWS_SQL = `
 	WHERE r.agent_id = $1
 	ORDER BY r.created_at DESC`;
 
+const SEARCH_AGENTS_SQL = `
+	WITH search_input AS (
+		SELECT plainto_tsquery('english', $1) AS q
+	)
+	SELECT
+		a.id AS agent_id,
+		a.team_name,
+		a.name,
+		a.description,
+		a.category,
+		a.keywords,
+		a.marketplace_ready,
+		a.endpoint_url,
+		COALESCE(ts.trust_score, 0) AS trust_score,
+		ts.tier,
+		COALESCE(ts.review_count, 0) AS review_count,
+		ts_rank(
+			to_tsvector('english',
+				COALESCE(a.name, '') || ' ' ||
+				COALESCE(a.description, '') || ' ' ||
+				COALESCE(a.category, '') || ' ' ||
+				COALESCE(array_to_string(a.keywords, ' '), '')
+			),
+			q
+		) AS relevance
+	FROM agents a
+	CROSS JOIN search_input
+	LEFT JOIN trust_scores ts ON ts.agent_id = a.id
+	WHERE a.is_active = TRUE
+		AND (
+			to_tsvector('english',
+				COALESCE(a.name, '') || ' ' ||
+				COALESCE(a.description, '') || ' ' ||
+				COALESCE(a.category, '') || ' ' ||
+				COALESCE(array_to_string(a.keywords, ' '), '')
+			) @@ q
+			OR a.name ILIKE '%' || $1 || '%'
+			OR a.description ILIKE '%' || $1 || '%'
+			OR a.category ILIKE '%' || $1 || '%'
+			OR array_to_string(a.keywords, ' ') ILIKE '%' || $1 || '%'
+		)
+	ORDER BY relevance DESC, COALESCE(ts.trust_score, 0) DESC
+	LIMIT $2`;
+
 const BASE_SEPOLIA_RPC = "https://sepolia.base.org";
 
 async function verifyBurnTx(txHash: string, reviewerAddress: string): Promise<{ valid: boolean; error?: string }> {
@@ -227,6 +271,24 @@ export class MyMCP extends McpAgent {
 				return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
 			},
 		);
+
+		this.server.tool(
+			"search_agents",
+			"Search agents using a natural-language query and return ranked matches with relevance and trust signals.",
+			{
+				query: z.string().min(1).describe('Natural-language search query, e.g. "best web search agent for market research".'),
+				limit: z.number().int().min(1).max(50).optional().describe("Optional max number of results to return (1-50, default 20)."),
+			},
+			async (params) => {
+				const limit = params.limit ?? 20;
+				const resp = await fetch(`${workerUrl}/api/search?q=${encodeURIComponent(params.query)}&limit=${limit}`);
+				const data = await resp.json() as { error?: string };
+				if (!resp.ok) {
+					return { content: [{ type: "text" as const, text: `Error: ${data.error || resp.statusText}` }], isError: true };
+				}
+				return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+			},
+		);
 	}
 }
 
@@ -245,6 +307,24 @@ export default {
 				const rows = await sql.unsafe(LIST_AGENTS_SQL);
 				await sql.end();
 				return Response.json({ items: rows });
+			} catch (err) {
+				return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+			}
+		}
+
+		// --- Search API ---
+		if (url.pathname === "/api/search") {
+			try {
+				const query = url.searchParams.get("q");
+				if (!query || query.trim().length === 0) {
+					return Response.json({ error: "q query parameter is required" }, { status: 400 });
+				}
+				const limitParam = url.searchParams.get("limit");
+				const limit = Math.max(1, Math.min(50, Number.parseInt(limitParam ?? "20", 10) || 20));
+				const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
+				const rows = await sql.unsafe(SEARCH_AGENTS_SQL, [query.trim(), limit]);
+				await sql.end();
+				return Response.json({ query: query.trim(), resultCount: rows.length, results: rows });
 			} catch (err) {
 				return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
 			}
@@ -518,6 +598,44 @@ export default {
 							});
 						}
 					}
+
+					if (toolName === "search_agents") {
+						const args = (body.params as any)?.arguments ?? {};
+						try {
+							const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
+							if (!args.query || typeof args.query !== "string" || args.query.trim().length === 0) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32602, message: "query is required and must be a non-empty string" },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+							const limit = Math.max(1, Math.min(50, Number.parseInt(String(args.limit ?? "20"), 10) || 20));
+							const rows = await sql.unsafe(SEARCH_AGENTS_SQL, [args.query.trim(), limit]);
+							await sql.end();
+
+							const settlement = await settlePermissions(auth.paymentRequired, token, CREDITS_PER_CALL, auth.verification.agentRequestId);
+							return Response.json({
+								jsonrpc: "2.0",
+								result: {
+									content: [{ type: "text", text: JSON.stringify({ query: args.query.trim(), resultCount: rows.length, results: rows }, null, 2) }],
+									_meta: {
+										creditsRedeemed: settlement.creditsRedeemed,
+										remainingBalance: settlement.remainingBalance,
+										transaction: settlement.transaction,
+									},
+								},
+								id: body.id ?? null,
+							});
+						} catch (err) {
+							return Response.json({
+								jsonrpc: "2.0",
+								error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+								id: body.id ?? null,
+							});
+						}
+					}
 				}
 
 				// Handle tools/list
@@ -559,6 +677,18 @@ export default {
 											agent_id: { type: "string", description: "UUID of the agent" },
 										},
 										required: ["agent_id"],
+									},
+								},
+								{
+									name: "search_agents",
+									description: "Search agents using a natural-language query and return ranked matches with relevance and trust signals.",
+									inputSchema: {
+										type: "object",
+										properties: {
+											query: { type: "string", description: 'Natural-language search query, e.g. "best web search agent for market research".' },
+											limit: { type: "number", description: "Optional max number of results to return (1-50, default 20)." },
+										},
+										required: ["query"],
 									},
 								},
 							],

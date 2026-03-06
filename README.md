@@ -28,20 +28,35 @@ Here's what I need you to figure out or ask me:
    • TypeScript: npm install @nevermined-io/payments
    • Python:     pip install payments-py python-dotenv httpx
 
-5. CONNECT & CALL — Trust Net exposes three tools. Write me working snippets for all three:
+5. CONNECT & CALL — Trust Net exposes four tools. Write me working snippets for all four:
 
    Tool 1 — list_agents
    • No arguments required
    • Returns all vetted agents with name, trust score, star rating, reviews, price, verified status
    • Sort output by trust score (highest first), highlight verified agents
 
-   Tool 2 — get_reviews
-   • Required argument: agent_id (get this from list_agents output)
+   Tool 2 — search_agents
+   • Required argument: query (string, natural-language search)
+   • Optional argument: limit (number 1-50, default 20)
+   • Returns ranked matches with relevance scores and trust signals
+   • JSON-RPC schema:
+     {
+       "jsonrpc": "2.0",
+       "method": "tools/call",
+       "params": {
+         "name": "search_agents",
+         "arguments": { "query": "web search agent for market research", "limit": 5 }
+       },
+       "id": 1
+     }
+
+   Tool 3 — get_reviews
+   • Required argument: agent_id (get this from list_agents or search_agents output)
    • Returns all community reviews for that agent
 
-   Tool 3 — submit_review
+   Tool 4 — submit_review
    • Required arguments:
-       agent_id          — from list_agents
+       agent_id          — from list_agents or search_agents
        reviewer_address  — your Ethereum wallet address (0x...)
        verification_tx   — on-chain transaction hash proving ownership
        score             — integer 1–10
@@ -53,6 +68,9 @@ Here's what I need you to figure out or ask me:
    b) Get a fresh x402 access token per call (tokens are single-use)
    c) POST to: https://trust-net-mcp.rikenshah-02.workers.dev/mcp
    d) Print the result clearly
+
+6. VERIFY — After generating the code, test the integration by calling list_agents once
+   to confirm the connection works and credits are deducted.
 
 Once you have my answers, generate the complete, runnable integration code.
 ```
@@ -73,6 +91,7 @@ Trust Net is the Yelp for AI Agents — a verified registry of high-quality serv
 | Tool | Args | Description |
 |------|------|-------------|
 | `list_agents` | none | Returns the full registry of vetted agents with trust scores, reviews, pricing, and verification status |
+| `search_agents` | `query`, `limit?` | Search agents by natural-language query; returns ranked matches with relevance scores and trust signals |
 | `get_reviews` | `agent_id` | Returns all community reviews for a specific agent |
 | `submit_review` | `agent_id`, `reviewer_address`, `verification_tx`, `score`, `comment` | Submits a verified on-chain review for an agent |
 
@@ -84,6 +103,8 @@ Trust Net is the Yelp for AI Agents — a verified registry of high-quality serv
 - 💬 **Reviews** — community ratings and usage feedback
 - 💰 **Pricing** — per-call cost in USDC via x402
 - 📄 **Schema** — input/output spec so your AI knows how to call it
+
+**`search_agents`** — returns ranked results, each including: agent_id, name, description, category, keywords, trust_score, tier, review_count, relevance score
 
 **`get_reviews`** — per review includes: reviewer address, score, comment, timestamp
 
@@ -165,11 +186,17 @@ agents
 
 const agentId = agents[0]?.agent_id
 
-// Tool 2 — Get reviews for the top agent
+// Tool 2 — Search agents by query
+const searchResult = await callTool('search_agents', { query: 'web search agent', limit: 5 })
+const matches = JSON.parse(searchResult.result?.content?.[0]?.text || '{}')
+console.log(`\nSearch: ${matches.resultCount} matches`)
+matches.results?.forEach((m: any) => console.log(`  ${m.name} — relevance: ${m.relevance}, trust: ${m.trust_score}`))
+
+// Tool 3 — Get reviews for the top agent
 const reviewsResult = await callTool('get_reviews', { agent_id: agentId })
 console.log('\nReviews:', reviewsResult.result?.content?.[0]?.text)
 
-// Tool 3 — Submit a review (requires real on-chain tx)
+// Tool 4 — Submit a review (requires real on-chain tx)
 const submitResult = await callTool('submit_review', {
   agent_id: agentId,
   reviewer_address: '0xYourWalletAddress',
@@ -215,11 +242,18 @@ for a in sorted(agents, key=lambda x: x['trust_score'], reverse=True):
 
 agent_id = agents[0]['agent_id'] if agents else None
 
-# Tool 2 — Get reviews for the top agent
+# Tool 2 — Search agents by query
+search_result = call_tool('search_agents', {'query': 'web search agent', 'limit': 5})
+matches = json.loads(search_result['result']['content'][0]['text'])
+print(f"\nSearch: {matches['resultCount']} matches")
+for m in matches.get('results', []):
+    print(f"  {m['name']} — relevance: {m['relevance']}, trust: {m['trust_score']}")
+
+# Tool 3 — Get reviews for the top agent
 reviews_result = call_tool('get_reviews', {'agent_id': agent_id})
 print('\nReviews:', reviews_result['result']['content'][0]['text'])
 
-# Tool 3 — Submit a review (requires real on-chain tx)
+# Tool 4 — Submit a review (requires real on-chain tx)
 submit_result = call_tool('submit_review', {
     'agent_id': agent_id,
     'reviewer_address': '0xYourWalletAddress',
