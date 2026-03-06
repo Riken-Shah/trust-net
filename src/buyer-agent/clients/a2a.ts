@@ -127,11 +127,6 @@ export async function purchaseViaA2A(input: A2APurchaseInput): Promise<PurchaseR
   const a2aBaseUrl = resolveA2ABaseUrl(input)
 
   try {
-    const balance = await input.payments.plans.getPlanBalance(input.planId)
-    if (!balance.isSubscriber || Number(balance.balance ?? 0) <= 0) {
-      await input.payments.plans.orderPlan(input.planId)
-    }
-
     const resolvedAgentId = input.sellerAgentId ?? null
     if (!resolvedAgentId) {
       return {

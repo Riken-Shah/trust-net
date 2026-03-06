@@ -15,6 +15,7 @@ export interface BuyerAgentConfig {
 
 export interface SellerPlan {
   nvmPlanId: string
+  pricingType: string | null
   fiatAmountCents: number | null
   tokenSymbol: string | null
   priceAmount: string | null
@@ -121,4 +122,10 @@ export interface SetupFailureInput {
   protocol: SellerProtocol
   reason: string
   planId: string | null
+  requestPayload?: Record<string, unknown> | null
+  responsePayload?: unknown
+  responseExcerpt?: string | null
+  paymentMeta?: Record<string, unknown> | null
+  httpStatus?: number | null
+  latencyMs?: number
 }

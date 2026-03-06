@@ -27,10 +27,6 @@ test('purchaseViaX402 returns successful settlement metadata', async () => {
     )
 
   const payments = {
-    plans: {
-      getPlanBalance: async () => ({ isSubscriber: true, balance: 10 }),
-      orderPlan: async () => ({ success: true }),
-    },
     x402: {
       getX402AccessToken: async () => ({ accessToken: 'token' }),
     },
@@ -71,10 +67,6 @@ test('purchaseViaMcp returns explicit failure when service cannot map to a tool'
   }
 
   const payments = {
-    plans: {
-      getPlanBalance: async () => ({ isSubscriber: true, balance: 10 }),
-      orderPlan: async () => ({ success: true }),
-    },
     x402: {
       getX402AccessToken: async () => ({ accessToken: 'token' }),
     },
@@ -122,10 +114,6 @@ test('purchaseViaMcp can succeed even when initialize is rejected', async () => 
   }
 
   const payments = {
-    plans: {
-      getPlanBalance: async () => ({ isSubscriber: true, balance: 10 }),
-      orderPlan: async () => ({ success: true }),
-    },
     x402: {
       getX402AccessToken: async () => ({ accessToken: 'token' }),
     },
@@ -160,10 +148,6 @@ test('purchaseViaMcp can succeed even when initialize is rejected', async () => 
 
 test('purchaseViaA2A returns failure when no matching skill is available', async () => {
   const payments = {
-    plans: {
-      getPlanBalance: async () => ({ isSubscriber: true, balance: 10 }),
-      orderPlan: async () => ({ success: true }),
-    },
     a2a: {
       getClient: async () => ({
         sendA2AMessage: async () => ({ result: { ok: true } }),

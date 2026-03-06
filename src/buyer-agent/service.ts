@@ -1,6 +1,7 @@
 import { type Pool } from 'pg'
 import { Payments } from '@nevermined-io/payments'
 
+import { ensurePlanReady } from './bootstrap.js'
 import { purchaseViaA2A } from './clients/a2a.js'
 import { discoverMcpCapabilities, purchaseViaMcp } from './clients/mcp.js'
 import { purchaseViaX402 } from './clients/x402.js'
@@ -130,7 +131,7 @@ async function purchaseService(
   }
 
   if (protocol === 'mcp') {
-    const matchedOffer = matchServiceToOffer(
+    const matchedOfferHint = matchServiceToOffer(
         {
           displayName: service.displayName,
           normalized: normalizeServiceName(service.displayName),
@@ -146,10 +147,13 @@ async function purchaseService(
       planId,
       sellerAgentId: seller.nvmAgentId,
       serviceName: service.displayName,
-      matchedOffer,
+      matchedOfferHint,
+      discoveredOffers,
       normalizedEndpointUrl,
       protocolDetails,
       timeoutMs: config.timeoutMs,
+      openAiApiKey: config.openAiApiKey,
+      model: config.model,
     })
   }
 
@@ -239,6 +243,24 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
         continue
       }
 
+      const bootstrap = await ensurePlanReady(payments, selectedPlan)
+      if (bootstrap.status !== 'ready') {
+        await insertSetupFailure(pool, {
+          runId: run.id,
+          seller,
+          protocol: detection.protocol,
+          reason: bootstrap.reason,
+          planId: selectedPlan.nvmPlanId,
+          requestPayload: bootstrap.requestPayload,
+          responsePayload: bootstrap.responsePayload,
+          responseExcerpt: bootstrap.responseExcerpt,
+          paymentMeta: bootstrap.paymentMeta,
+          httpStatus: bootstrap.httpStatus,
+          latencyMs: bootstrap.latencyMs,
+        })
+        continue
+      }
+
       let discoveredOffers = detection.discoveredOffers
       if (detection.protocol === 'mcp') {
         discoveredOffers = await discoverMcpCapabilities({
@@ -263,7 +285,13 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
       }
 
       const services = detection.protocol === 'mcp'
-        ? buildDiscoveredServiceTargets(discoveredOffers)
+        ? (() => {
+            const dbServices = buildServiceUnion(seller.servicesSold, [])
+            if (dbServices.length > 0) {
+              return dbServices
+            }
+            return buildDiscoveredServiceTargets(discoveredOffers)
+          })()
         : buildServiceUnion(seller.servicesSold, discoveredOffers)
       if (services.length === 0) {
         await insertSetupFailure(pool, {

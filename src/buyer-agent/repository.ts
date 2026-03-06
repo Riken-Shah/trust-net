@@ -22,6 +22,7 @@ interface SellerRow {
 interface SellerPlanRow {
   agent_id: string
   nvm_plan_id: string
+  pricing_type: string | null
   fiat_amount_cents: number | null
   token_symbol: string | null
   price_amount: string | null
@@ -89,6 +90,7 @@ export async function fetchUnverifiedSellers(
       SELECT
         services.agent_id,
         services.nvm_plan_id,
+        plans.pricing_type,
         plans.fiat_amount_cents,
         plans.token_symbol,
         plans.price_amount
@@ -107,6 +109,7 @@ export async function fetchUnverifiedSellers(
     const list = plansByAgent.get(row.agent_id) ?? []
     list.push({
       nvmPlanId: row.nvm_plan_id,
+      pricingType: row.pricing_type,
       fiatAmountCents: row.fiat_amount_cents,
       tokenSymbol: row.token_symbol,
       priceAmount: row.price_amount,
@@ -282,16 +285,22 @@ export async function insertSetupFailure(pool: Pool, input: SetupFailureInput): 
         protocol,
         plan_id,
         endpoint_url,
+        request_payload,
+        response_payload,
+        response_excerpt,
         purchase_success,
         purchase_error,
+        http_status,
         latency_ms,
+        payment_meta,
         passed
       )
       VALUES (
         $1, $2, $3, $4,
         '__setup__', '__setup__',
         $5, $6, $7,
-        FALSE, $8, 0, FALSE
+        $8::jsonb, $9::jsonb, $10,
+        FALSE, $11, $12, $13, $14::jsonb, FALSE
       )
     `,
     [
@@ -302,7 +311,13 @@ export async function insertSetupFailure(pool: Pool, input: SetupFailureInput): 
       input.protocol,
       input.planId,
       input.seller.endpointUrl,
+      asJson(input.requestPayload),
+      asJson(input.responsePayload),
+      input.responseExcerpt ?? null,
       input.reason,
+      input.httpStatus ?? null,
+      input.latencyMs ?? 0,
+      asJson(input.paymentMeta),
     ],
   )
 }

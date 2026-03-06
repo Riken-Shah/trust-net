@@ -3,6 +3,7 @@ import {
   type JudgmentContext,
   type JudgmentResult,
 } from './types.js'
+import { callOpenAiJson } from './openai.js'
 
 interface RawJudgmentOutput {
   overall_score?: unknown
@@ -121,68 +122,6 @@ function buildPrompt(context: JudgmentContext): string {
   )
 }
 
-async function callOpenAiJson(
-  apiKey: string,
-  model: string,
-  prompt: string,
-  timeoutMs: number,
-): Promise<RawJudgmentOutput> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => {
-    controller.abort()
-  }, timeoutMs)
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are a strict reviewer. Return valid JSON only. Be conservative on quality scoring.',
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      }),
-      signal: controller.signal,
-    })
-
-    if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`openai_http_${response.status}:${body.slice(0, 500)}`)
-    }
-
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } }>
-    }
-
-    const content = payload.choices?.[0]?.message?.content
-    if (!content || typeof content !== 'string') {
-      throw new Error('openai_missing_message_content')
-    }
-
-    const parsed = JSON.parse(content)
-    if (!parsed || typeof parsed !== 'object') {
-      throw new Error('openai_non_object_json')
-    }
-
-    return parsed as RawJudgmentOutput
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 export async function scoreServiceResult(
   config: BuyerAgentConfig,
   context: JudgmentContext,
@@ -198,6 +137,7 @@ export async function scoreServiceResult(
     const rawOutput = await callOpenAiJson(
       config.openAiApiKey,
       config.model,
+      'You are a strict reviewer. Return valid JSON only. Be conservative on quality scoring.',
       prompt,
       config.timeoutMs,
     )

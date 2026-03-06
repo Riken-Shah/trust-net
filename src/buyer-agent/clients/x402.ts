@@ -80,11 +80,6 @@ export async function purchaseViaX402(input: X402PurchaseInput): Promise<Purchas
   const startedAt = Date.now()
 
   try {
-    const balance = await input.payments.plans.getPlanBalance(input.planId)
-    if (!balance.isSubscriber || Number(balance.balance ?? 0) <= 0) {
-      await input.payments.plans.orderPlan(input.planId)
-    }
-
     const token = await input.payments.x402.getX402AccessToken(
       input.planId,
       input.sellerAgentId ?? undefined,

@@ -98,6 +98,42 @@ function parseSkillOffers(agentCard: Record<string, unknown>): DiscoveredOffer[]
   return dedupeOffers(offers)
 }
 
+function extractA2APaymentParams(agentCard: Record<string, unknown>): Record<string, unknown> | null {
+  const capabilities = agentCard.capabilities
+  if (!capabilities || typeof capabilities !== 'object') {
+    return null
+  }
+
+  const extensions = (capabilities as { extensions?: unknown }).extensions
+  if (!Array.isArray(extensions)) {
+    return null
+  }
+
+  for (const extension of extensions) {
+    if (!extension || typeof extension !== 'object') {
+      continue
+    }
+
+    const uri = (extension as { uri?: unknown }).uri
+    if (uri !== 'urn:nevermined:payment') {
+      continue
+    }
+
+    const params = (extension as { params?: unknown }).params
+    if (!params || typeof params !== 'object') {
+      continue
+    }
+
+    const planId = (params as { planId?: unknown }).planId
+    const agentId = (params as { agentId?: unknown }).agentId
+    if (typeof planId === 'string' && planId.trim() && typeof agentId === 'string' && agentId.trim()) {
+      return params as Record<string, unknown>
+    }
+  }
+
+  return null
+}
+
 function parseMcpToolOffers(json: JsonRpcResponse): DiscoveredOffer[] {
   const tools = Array.isArray(json.result?.tools) ? json.result?.tools : []
   const offers: DiscoveredOffer[] = []
@@ -118,12 +154,14 @@ function parseMcpToolOffers(json: JsonRpcResponse): DiscoveredOffer[] {
       source: 'mcp_tools',
       capabilityKind: 'tool',
       capabilityId: name,
-      metadata:
-        tool && typeof tool === 'object'
-          ? ((tool as { inputSchema?: unknown }).inputSchema && typeof (tool as { inputSchema?: unknown }).inputSchema === 'object'
-              ? { inputSchema: (tool as { inputSchema?: unknown }).inputSchema as Record<string, unknown> }
-              : null)
-          : null,
+      metadata: {
+        ...(typeof (tool as { description?: unknown }).description === 'string'
+          ? { description: (tool as { description?: string }).description }
+          : {}),
+        ...((tool as { inputSchema?: unknown }).inputSchema && typeof (tool as { inputSchema?: unknown }).inputSchema === 'object'
+          ? { inputSchema: (tool as { inputSchema?: unknown }).inputSchema as Record<string, unknown> }
+          : {}),
+      },
     })
   }
 
@@ -154,7 +192,12 @@ function parseMcpPromptOffers(json: JsonRpcResponse): DiscoveredOffer[] {
       source: 'mcp_prompts',
       capabilityKind: 'prompt',
       capabilityId: name,
-      metadata: argumentsList ? { arguments: argumentsList } : null,
+      metadata: {
+        ...(typeof (prompt as { description?: unknown }).description === 'string'
+          ? { description: (prompt as { description?: string }).description }
+          : {}),
+        ...(argumentsList ? { arguments: argumentsList } : {}),
+      },
     })
   }
 
@@ -187,7 +230,16 @@ function parseMcpResourceOffers(json: JsonRpcResponse): DiscoveredOffer[] {
       source: 'mcp_resources',
       capabilityKind: 'resource',
       capabilityId: uri,
-      metadata: { uri },
+      metadata: {
+        uri,
+        ...(typeof title === 'string' ? { title } : {}),
+        ...(typeof (resource as { description?: unknown }).description === 'string'
+          ? { description: (resource as { description?: string }).description }
+          : {}),
+        ...(typeof (resource as { mimeType?: unknown }).mimeType === 'string'
+          ? { mimeType: (resource as { mimeType?: string }).mimeType }
+          : {}),
+      },
     })
   }
 
@@ -393,12 +445,16 @@ async function probeA2A(endpoint: URL, timeoutMs: number): Promise<ProtocolDetec
       }
 
       const agentCard = body as Record<string, unknown>
-      const hasIdentity = typeof agentCard.name === 'string' || typeof agentCard.description === 'string'
-      if (!hasIdentity) {
+      const discoveredOffers = parseSkillOffers(agentCard)
+      if (discoveredOffers.length === 0) {
         continue
       }
 
-      const discoveredOffers = parseSkillOffers(agentCard)
+      const paymentParams = extractA2APaymentParams(agentCard)
+      if (!paymentParams) {
+        continue
+      }
+
       const cardBaseUrl = cardUrl.replace(/\.well-known\/agent\.json$/, '')
 
       return {
@@ -408,6 +464,7 @@ async function probeA2A(endpoint: URL, timeoutMs: number): Promise<ProtocolDetec
         details: {
           a2aBaseUrl: cardBaseUrl,
           agentCard,
+          paymentParams,
         },
       }
     } catch {

@@ -93,3 +93,74 @@ test('detectSellerProtocol recognizes auth-protected MCP endpoints', async () =>
     global.fetch = originalFetch
   }
 })
+
+test('detectSellerProtocol rejects generic well-known JSON without A2A payment extension', async () => {
+  const originalFetch = global.fetch
+  const responses = [
+    createResponse(200, {
+      name: 'Generic Seller',
+      description: 'Not actually A2A',
+      skills: [{ name: 'lead-search' }],
+    }),
+    createResponse(404, { detail: 'not found' }),
+    createResponse(404, { detail: 'not found' }),
+    createResponse(405, { detail: 'not found' }),
+    createResponse(404, { detail: 'not found' }),
+  ]
+
+  global.fetch = async () => {
+    const next = responses.shift()
+    if (!next) {
+      throw new Error('Unexpected extra fetch call in test.')
+    }
+    return next
+  }
+
+  try {
+    const result = await detectSellerProtocol('https://example.com/leads', 1000)
+    assert.equal(result.protocol, 'unknown')
+    assert.equal(result.reason, 'unknown_protocol')
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('detectSellerProtocol accepts Nevermined A2A payment cards with skills', async () => {
+  const originalFetch = global.fetch
+  const responses = [
+    createResponse(200, {
+      name: 'Weather Agent',
+      description: 'A2A seller',
+      skills: [{ name: 'weather.today' }],
+      capabilities: {
+        extensions: [
+          {
+            uri: 'urn:nevermined:payment',
+            params: {
+              planId: 'plan-1',
+              agentId: 'agent-1',
+            },
+          },
+        ],
+      },
+    }),
+  ]
+
+  global.fetch = async () => {
+    const next = responses.shift()
+    if (!next) {
+      throw new Error('Unexpected extra fetch call in test.')
+    }
+    return next
+  }
+
+  try {
+    const result = await detectSellerProtocol('https://example.com/a2a', 1000)
+    assert.equal(result.protocol, 'a2a')
+    assert.equal(result.reason, 'a2a_agent_card_detected')
+    assert.equal(result.details.a2aBaseUrl, 'https://example.com/')
+    assert.equal((result.details.paymentParams as { planId?: string }).planId, 'plan-1')
+  } finally {
+    global.fetch = originalFetch
+  }
+})
