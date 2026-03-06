@@ -15,9 +15,6 @@ import {
 
 loadDotEnv()
 
-const app = express()
-app.use(express.json())
-
 const LIST_AGENTS_SQL = `
   SELECT
     a.id AS agent_id,
@@ -54,28 +51,30 @@ function parseServicePort(rawPort: string | undefined): number {
 
 const servicePort = parseServicePort(process.env.DB_SERVICE_PORT ?? process.env.PORT)
 
-app.get('/health/live', (_request: Request, response: Response) => {
-  response.status(200).json({
-    status: 'alive',
-    service: 'seller-agent-service',
-  })
+const payments = Payments.getInstance({
+  nvmApiKey: process.env.NVM_API_KEY!,
+  environment: (process.env.NVM_ENVIRONMENT || 'sandbox') as EnvironmentName,
 })
 
-app.get('/health/ready', async (_request: Request, response: Response) => {
-  try {
-    await pingDb()
-    response.status(200).json({
-      status: 'ready',
-      service: 'seller-agent-service',
-    })
-  } catch (error) {
-    response.status(503).json({
-      status: 'not_ready',
-      service: 'seller-agent-service',
-      error: error instanceof Error ? error.message : 'Unknown DB readiness failure',
-    })
-  }
-})
+payments.mcp.registerTool(
+  'list_agents',
+  {
+    title: 'List Agents',
+    description: 'List all agents with trust scores, payment plans, service info, and computed stats.',
+  },
+  async () => {
+    const items = await fetchAgentList()
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ items }, null, 2),
+        },
+      ],
+    }
+  },
+  { credits: 1n },
+)
 
 function startIntelSnapshotScheduler(
   capture: () => Promise<{ snapshotAt: Date; inserted: number }>,
@@ -107,49 +106,6 @@ function startIntelSnapshotScheduler(
   }, intervalMs)
 }
 
-app.get('/health', (_request: Request, response: Response) => {
-  response.status(200).json({
-    status: 'ok',
-    service: 'seller-agent-service',
-  })
-})
-
-app.get('/api/list', async (_request: Request, response: Response) => {
-  try {
-    const items = await fetchAgentList()
-    response.status(200).json({ items })
-  } catch (error) {
-    response.status(400).json({
-      error: error instanceof Error ? error.message : 'Failed to list data.',
-    })
-  }
-})
-
-const payments = Payments.getInstance({
-  nvmApiKey: process.env.NVM_API_KEY!,
-  environment: (process.env.NVM_ENVIRONMENT || 'sandbox') as EnvironmentName,
-})
-
-payments.mcp.registerTool(
-  'list_agents',
-  {
-    title: 'List Agents',
-    description: 'List all agents with trust scores, payment plans, service info, and computed stats.',
-  },
-  async () => {
-    const items = await fetchAgentList()
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ items }, null, 2),
-        },
-      ],
-    }
-  },
-  { credits: 1n },
-)
-
 async function bootstrap(): Promise<void> {
   const intelConfig = loadIntelRuntimeConfig()
 
@@ -164,25 +120,68 @@ async function bootstrap(): Promise<void> {
     searchResultLimit: intelConfig.searchResultLimit,
     avoidFailureThreshold: intelConfig.avoidFailureThreshold,
   })
-  app.use('/intel', createIntelRouter(intelService))
 
-  const mcpRouter = payments.mcp.createRouter({
-    baseUrl: `http://localhost:${servicePort}`,
+  // Start the MCP server as the primary server on the main port.
+  // It handles OAuth discovery, session management, and JSON-RPC transport.
+  const { info: mcpInfo, stop: stopMcp } = await payments.mcp.start({
+    port: servicePort,
     agentId: process.env.SELLER_AGENT_ID || 'seller-agent',
     serverName: 'seller-agent-service',
+    baseUrl: process.env.MCP_BASE_URL || `http://localhost:${servicePort}`,
     version: '0.1.0',
     description: 'Trust-net agent directory with trust scores and marketplace data',
   })
-  app.use('/mcp', mcpRouter)
+  console.log(`MCP server running at ${mcpInfo.baseUrl}/mcp (tools: ${mcpInfo.tools.join(', ')})`)
+
+  // Mount additional REST endpoints on a secondary Express app.
+  const restApp = express()
+  restApp.use(express.json())
+
+  restApp.get('/health/live', (_request: Request, response: Response) => {
+    response.status(200).json({
+      status: 'alive',
+      service: 'seller-agent-service',
+    })
+  })
+
+  restApp.get('/health/ready', async (_request: Request, response: Response) => {
+    try {
+      await pingDb()
+      response.status(200).json({
+        status: 'ready',
+        service: 'seller-agent-service',
+      })
+    } catch (error) {
+      response.status(503).json({
+        status: 'not_ready',
+        service: 'seller-agent-service',
+        error: error instanceof Error ? error.message : 'Unknown DB readiness failure',
+      })
+    }
+  })
+
+  restApp.get('/api/list', async (_request: Request, response: Response) => {
+    try {
+      const items = await fetchAgentList()
+      response.status(200).json({ items })
+    } catch (error) {
+      response.status(400).json({
+        error: error instanceof Error ? error.message : 'Failed to list data.',
+      })
+    }
+  })
+
+  restApp.use('/intel', createIntelRouter(intelService))
+
+  const restPort = servicePort + 1
+  const restServer = restApp.listen(restPort, () => {
+    console.log(`REST API listening on http://localhost:${restPort}`)
+  })
 
   const snapshotTimer = startIntelSnapshotScheduler(
     () => intelService.captureSnapshotNow(),
     intelConfig.snapshotIntervalSeconds,
   )
-
-  const server = app.listen(servicePort, () => {
-    console.log(`trust-net DB service listening on http://localhost:${servicePort}`)
-  })
 
   let shuttingDown = false
   const gracefulShutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -191,11 +190,12 @@ async function bootstrap(): Promise<void> {
     }
     shuttingDown = true
 
-    console.log(`Received ${signal}, shutting down DB service...`)
+    console.log(`Received ${signal}, shutting down...`)
     clearInterval(snapshotTimer)
+    await stopMcp()
 
     await new Promise<void>((resolve, reject) => {
-      server.close((error) => {
+      restServer.close((error) => {
         if (error) {
           reject(error)
           return
@@ -217,7 +217,7 @@ async function bootstrap(): Promise<void> {
 }
 
 void bootstrap().catch(async (error) => {
-  console.error('Failed to start trust-net DB service:', error)
+  console.error('Failed to start seller-agent-service:', error)
   await closeDbPool()
   process.exit(1)
 })
