@@ -520,6 +520,23 @@ async function bootstrap(): Promise<void> {
     }
   })
 
+  restApp.get('/api/search', async (request: Request, response: Response) => {
+    const q = typeof request.query.q === 'string' ? normalizeWhitespace(request.query.q) : ''
+    if (q.length === 0) {
+      response.status(400).json({ error: 'Missing required query param: q' })
+      return
+    }
+
+    try {
+      const result = await searchAgents(q)
+      response.status(200).json(result)
+    } catch (error) {
+      response.status(400).json({
+        error: error instanceof Error ? error.message : 'Failed to search agents.',
+      })
+    }
+  })
+
   restApp.use('/intel', createIntelRouter(intelService))
 
   const restPort = servicePort + 1
