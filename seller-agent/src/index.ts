@@ -451,13 +451,126 @@ export default {
 			const authHeader = request.headers.get("authorization");
 			const sessionHeader = request.headers.get("mcp-session-id");
 
+			// --- Unauthenticated: handle submit_review (free, on-chain tx is the auth) ---
+			if (!authHeader && !sessionHeader) {
+				const body = await request.json() as { jsonrpc: string; method: string; params?: Record<string, unknown>; id?: number | string | null };
+
+				if (body.method === "tools/call" && (body.params as any)?.name === "submit_review") {
+					const args = (body.params as any)?.arguments ?? {};
+					try {
+						const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
+
+						if (!args.agent_id || !args.reviewer_address || !args.verification_tx || !args.score) {
+							await sql.end();
+							return Response.json({
+								jsonrpc: "2.0",
+								error: { code: -32602, message: "Missing required fields: agent_id, reviewer_address, verification_tx, score" },
+								id: body.id ?? null,
+							}, { status: 400 });
+						}
+
+						const txCheck = await verifyBurnTx(args.verification_tx, args.reviewer_address);
+						if (!txCheck.valid) {
+							await sql.end();
+							return Response.json({
+								jsonrpc: "2.0",
+								error: { code: -32000, message: `Transaction verification failed: ${txCheck.error}` },
+								id: body.id ?? null,
+							}, { status: 400 });
+						}
+
+						const rows = await sql.unsafe(INSERT_REVIEW_SQL, [
+							args.agent_id, args.reviewer_address, args.verification_tx, args.score,
+							args.score_accuracy ?? null, args.score_speed ?? null,
+							args.score_value ?? null, args.score_reliability ?? null,
+							args.comment ?? null,
+						]);
+						await sql.end();
+
+						return Response.json({
+							jsonrpc: "2.0",
+							result: {
+								content: [{ type: "text", text: JSON.stringify({ review: rows[0] }, null, 2) }],
+							},
+							id: body.id ?? null,
+						});
+					} catch (err) {
+						return Response.json({
+							jsonrpc: "2.0",
+							error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+							id: body.id ?? null,
+						});
+					}
+				}
+
+				// All other methods require auth — return 401
+				return Response.json({
+					jsonrpc: "2.0",
+					error: { code: -32000, message: "Authorization header required. submit_review is the only unauthenticated MCP tool." },
+					id: body.id ?? null,
+				}, { status: 401 });
+			}
+
 			if (authHeader && !sessionHeader) {
 				const token = authHeader.replace(/^Bearer\s+/i, "");
 				const body = await request.json() as { jsonrpc: string; method: string; params?: Record<string, unknown>; id?: number | string | null };
 
-				// Handle tools/call (all tools payment-protected, multi-plan)
+				// Handle tools/call
 				if (body.method === "tools/call") {
 					const toolName = (body.params as any)?.name;
+
+					// --- Free tool: submit_review (no payment required, on-chain tx verification only) ---
+
+					if (toolName === "submit_review") {
+						const args = (body.params as any)?.arguments ?? {};
+						try {
+							const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
+
+							if (!args.agent_id || !args.reviewer_address || !args.verification_tx || !args.score) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32602, message: "Missing required fields: agent_id, reviewer_address, verification_tx, score" },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+
+							const txCheck = await verifyBurnTx(args.verification_tx, args.reviewer_address);
+							if (!txCheck.valid) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32000, message: `Transaction verification failed: ${txCheck.error}` },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+
+							const rows = await sql.unsafe(INSERT_REVIEW_SQL, [
+								args.agent_id, args.reviewer_address, args.verification_tx, args.score,
+								args.score_accuracy ?? null, args.score_speed ?? null,
+								args.score_value ?? null, args.score_reliability ?? null,
+								args.comment ?? null,
+							]);
+							await sql.end();
+
+							return Response.json({
+								jsonrpc: "2.0",
+								result: {
+									content: [{ type: "text", text: JSON.stringify({ review: rows[0] }, null, 2) }],
+								},
+								id: body.id ?? null,
+							});
+						} catch (err) {
+							return Response.json({
+								jsonrpc: "2.0",
+								error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+								id: body.id ?? null,
+							});
+						}
+					}
+
+					// --- Paid tools (x402 payment required) ---
+
 					const planIds = getPlanIds(env);
 					const agentId = env.SELLER_AGENT_ID || "";
 
@@ -506,60 +619,6 @@ export default {
 							},
 							id: body.id ?? null,
 						});
-					}
-
-					if (toolName === "submit_review") {
-						const args = (body.params as any)?.arguments ?? {};
-						try {
-							const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
-
-							if (!args.agent_id || !args.reviewer_address || !args.verification_tx || !args.score) {
-								await sql.end();
-								return Response.json({
-									jsonrpc: "2.0",
-									error: { code: -32602, message: "Missing required fields: agent_id, reviewer_address, verification_tx, score" },
-									id: body.id ?? null,
-								}, { status: 400 });
-							}
-
-							const txCheck = await verifyBurnTx(args.verification_tx, args.reviewer_address);
-							if (!txCheck.valid) {
-								await sql.end();
-								return Response.json({
-									jsonrpc: "2.0",
-									error: { code: -32000, message: `Transaction verification failed: ${txCheck.error}` },
-									id: body.id ?? null,
-								}, { status: 400 });
-							}
-
-							const rows = await sql.unsafe(INSERT_REVIEW_SQL, [
-								args.agent_id, args.reviewer_address, args.verification_tx, args.score,
-								args.score_accuracy ?? null, args.score_speed ?? null,
-								args.score_value ?? null, args.score_reliability ?? null,
-								args.comment ?? null,
-							]);
-							await sql.end();
-
-							const settlement = await settlePermissions(auth.paymentRequired, token, CREDITS_PER_CALL, auth.verification.agentRequestId);
-							return Response.json({
-								jsonrpc: "2.0",
-								result: {
-									content: [{ type: "text", text: JSON.stringify({ review: rows[0] }, null, 2) }],
-									_meta: {
-										creditsRedeemed: settlement.creditsRedeemed,
-										remainingBalance: settlement.remainingBalance,
-										transaction: settlement.transaction,
-									},
-								},
-								id: body.id ?? null,
-							});
-						} catch (err) {
-							return Response.json({
-								jsonrpc: "2.0",
-								error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
-								id: body.id ?? null,
-							});
-						}
 					}
 
 					if (toolName === "get_reviews") {
