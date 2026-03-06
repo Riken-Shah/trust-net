@@ -119,7 +119,10 @@ async function normalizeSearchQuery(rawQuery: string): Promise<SearchQueryProfil
     usedLlm: false,
   }
 
-  if (!SEARCH_LLM_ENABLED || OPENAI_API_KEY.length === 0 || inputQuery.length === 0) {
+  if (inputQuery.length === 0) {
+    throw new Error('Search query cannot be empty.')
+  }
+  if (!SEARCH_LLM_ENABLED || OPENAI_API_KEY.length === 0) {
     return fallbackProfile
   }
 
@@ -195,7 +198,7 @@ async function normalizeSearchQuery(rawQuery: string): Promise<SearchQueryProfil
       terms: terms.length > 0 ? terms : tokenizeQuery(normalizedQuery),
       usedLlm: true,
     }
-  } catch {
+  } catch (error) {
     return fallbackProfile
   } finally {
     clearTimeout(timeoutId)
