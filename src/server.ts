@@ -1,5 +1,6 @@
 import { config as loadDotEnv } from 'dotenv'
 import express, { type Request, type Response } from 'express'
+import { Payments, type EnvironmentName } from '@nevermined-io/payments'
 
 import {
   closeDbPool,
@@ -16,15 +17,6 @@ loadDotEnv()
 
 const app = express()
 app.use(express.json())
-
-type JsonRpcId = string | number | null
-
-interface JsonRpcRequestBody {
-  jsonrpc?: unknown
-  id?: JsonRpcId
-  method?: unknown
-  params?: unknown
-}
 
 const LIST_AGENTS_SQL = `
   SELECT
@@ -44,32 +36,6 @@ const LIST_AGENTS_SQL = `
   WHERE a.is_active = TRUE
   ORDER BY COALESCE(ts.trust_score, 0) DESC, a.name ASC
 `
-
-function sendJsonRpcResult(response: Response, id: JsonRpcId, result: unknown): void {
-  response.status(200).json({
-    jsonrpc: '2.0',
-    id,
-    result,
-  })
-}
-
-function sendJsonRpcError(
-  response: Response,
-  id: JsonRpcId,
-  code: number,
-  message: string,
-  data?: unknown,
-): void {
-  response.status(200).json({
-    jsonrpc: '2.0',
-    id,
-    error: {
-      code,
-      message,
-      ...(data === undefined ? {} : { data }),
-    },
-  })
-}
 
 async function fetchAgentList(): Promise<Record<string, unknown>[]> {
   const pool = getDbPool()
@@ -91,7 +57,7 @@ const servicePort = parseServicePort(process.env.DB_SERVICE_PORT ?? process.env.
 app.get('/health/live', (_request: Request, response: Response) => {
   response.status(200).json({
     status: 'alive',
-    service: 'trust-net-db-service',
+    service: 'seller-agent-service',
   })
 })
 
@@ -100,12 +66,12 @@ app.get('/health/ready', async (_request: Request, response: Response) => {
     await pingDb()
     response.status(200).json({
       status: 'ready',
-      service: 'trust-net-db-service',
+      service: 'seller-agent-service',
     })
   } catch (error) {
     response.status(503).json({
       status: 'not_ready',
-      service: 'trust-net-db-service',
+      service: 'seller-agent-service',
       error: error instanceof Error ? error.message : 'Unknown DB readiness failure',
     })
   }
@@ -144,7 +110,7 @@ function startIntelSnapshotScheduler(
 app.get('/health', (_request: Request, response: Response) => {
   response.status(200).json({
     status: 'ok',
-    service: 'trust-net-db-service',
+    service: 'seller-agent-service',
   })
 })
 
@@ -159,78 +125,30 @@ app.get('/api/list', async (_request: Request, response: Response) => {
   }
 })
 
-app.post('/mcp', async (request: Request, response: Response) => {
-  const body = request.body as JsonRpcRequestBody
-  const requestId: JsonRpcId = body?.id ?? null
+const payments = Payments.getInstance({
+  nvmApiKey: process.env.NVM_API_KEY!,
+  environment: (process.env.NVM_ENVIRONMENT || 'sandbox') as EnvironmentName,
+})
 
-  if (body?.jsonrpc !== '2.0' || typeof body?.method !== 'string') {
-    sendJsonRpcError(response, requestId, -32600, 'Invalid Request')
-    return
-  }
-
-  if (body.method === 'initialize') {
-    sendJsonRpcResult(response, requestId, {
-      protocolVersion: '2024-11-05',
-      capabilities: {
-        tools: {},
-      },
-      serverInfo: {
-        name: 'trust-net-db-service',
-        version: '0.1.0',
-      },
-    })
-    return
-  }
-
-  if (body.method === 'tools/list') {
-    sendJsonRpcResult(response, requestId, {
-      tools: [
+payments.mcp.registerTool(
+  'list_agents',
+  {
+    title: 'List Agents',
+    description: 'List all agents with trust scores, payment plans, service info, and computed stats.',
+  },
+  async () => {
+    const items = await fetchAgentList()
+    return {
+      content: [
         {
-          name: 'list_agents',
-          description: 'List active hackathon agents with summary metadata and trust score.',
-          inputSchema: {
-            type: 'object',
-            properties: {},
-            additionalProperties: false,
-          },
+          type: 'text' as const,
+          text: JSON.stringify({ items }, null, 2),
         },
       ],
-    })
-    return
-  }
-
-  if (body.method === 'tools/call') {
-    const params = body.params as { name?: unknown }
-    if (params?.name !== 'list_agents') {
-      sendJsonRpcError(response, requestId, -32602, 'Unknown tool name.')
-      return
     }
-
-    try {
-      const items = await fetchAgentList()
-      sendJsonRpcResult(response, requestId, {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({ items }, null, 2),
-          },
-        ],
-        structuredContent: { items },
-      })
-    } catch (error) {
-      sendJsonRpcError(
-        response,
-        requestId,
-        -32000,
-        'Failed to execute list_agents tool.',
-        error instanceof Error ? error.message : 'Unknown error',
-      )
-    }
-    return
-  }
-
-  sendJsonRpcError(response, requestId, -32601, `Method not found: ${body.method}`)
-})
+  },
+  { credits: 1n },
+)
 
 async function bootstrap(): Promise<void> {
   const intelConfig = loadIntelRuntimeConfig()
@@ -247,6 +165,15 @@ async function bootstrap(): Promise<void> {
     avoidFailureThreshold: intelConfig.avoidFailureThreshold,
   })
   app.use('/intel', createIntelRouter(intelService))
+
+  const mcpRouter = payments.mcp.createRouter({
+    baseUrl: `http://localhost:${servicePort}`,
+    agentId: process.env.SELLER_AGENT_ID || 'seller-agent',
+    serverName: 'seller-agent-service',
+    version: '0.1.0',
+    description: 'Trust-net agent directory with trust scores and marketplace data',
+  })
+  app.use('/mcp', mcpRouter)
 
   const snapshotTimer = startIntelSnapshotScheduler(
     () => intelService.captureSnapshotNow(),
