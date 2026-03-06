@@ -8,12 +8,16 @@
     "dev": "tsx src/server.ts",
     "ingest:once": "tsx src/ingestion/runOnce.ts",
     "ingest:worker": "tsx src/ingestion/worker.ts",
+    "intel:snapshot:once": "tsx src/intel/snapshotOnce.ts",
+    "intel:snapshot:worker": "tsx src/intel/snapshotWorker.ts",
+    "intel:test:endpoints": "bash scripts/test-intel-endpoints.sh",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "check": "tsc --noEmit",
     "test:integration": "node --test --import tsx src/db/pool.integration.test.ts",
-    "test:unit": "node --test --import tsx \"src/ingestion/__tests__/*.test.ts\"",
-    "test:ingestion:integration": "node --test --import tsx src/ingestion/ingestion.integration.test.ts"
+    "test:unit": "node --test --import tsx \"src/ingestion/__tests__/*.test.ts\" \"src/intel/__tests__/*.test.ts\"",
+    "test:ingestion:integration": "node --test --import tsx src/ingestion/ingestion.integration.test.ts",
+    "test:intel:integration": "node --test --import tsx src/intel/intel.integration.test.ts"
   },
   "dependencies": {
     "@nevermined-io/payments": "1.1.5",

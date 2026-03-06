@@ -44,6 +44,11 @@ npm run build && npm start  # production build + run
 Health endpoints:
 - `GET /health/live`
 - `GET /health/ready`
+- `GET /intel/agent/:agentId`
+- `GET /intel/search?q=...`
+- `GET /intel/trending`
+- `GET /intel/avoid`
+- `GET /intel/compare?ids=id1,id2[,id3]`
 
 Integration tests against a real Supabase/PostgreSQL instance:
 
@@ -69,6 +74,21 @@ Key env vars:
 - `INGEST_RETRY_COUNT` (default: `2`)
 - `INGEST_PLAN_ENRICH_CONCURRENCY` (default: `5`)
 - `NVM_API_KEY` and `NVM_ENVIRONMENT` (required for plan enrichment)
+
+### Intel Snapshot Pipeline
+
+The Intel API uses per-minute agent stats snapshots to compute accurate 30-minute window metrics for trending and failure alerts.
+
+```bash
+npm run intel:snapshot:once
+npm run intel:snapshot:worker
+```
+
+Key env vars:
+- `INTEL_SNAPSHOT_INTERVAL_SECONDS` (default: `60`)
+- `INTEL_WINDOW_MINUTES` (default: `30`)
+- `INTEL_SEARCH_RESULT_LIMIT` (default: `50`)
+- `INTEL_AVOID_FAILURE_THRESHOLD` (default: `3`)
 
 ## Agents
 

@@ -1,7 +1,16 @@
 import { config as loadDotEnv } from 'dotenv'
 import express, { type Request, type Response } from 'express'
 
-import { closeDbPool, initDbPool, pingDb } from './index.js'
+import {
+  closeDbPool,
+  createIntelRouter,
+  createIntelService,
+  ensureIntelSchema,
+  getDbPool,
+  initDbPool,
+  loadIntelRuntimeConfig,
+  pingDb,
+} from './index.js'
 
 loadDotEnv()
 
@@ -41,9 +50,56 @@ app.get('/health/ready', async (_request: Request, response: Response) => {
   }
 })
 
+function startIntelSnapshotScheduler(
+  capture: () => Promise<{ snapshotAt: Date; inserted: number }>,
+  intervalSeconds: number,
+): NodeJS.Timeout {
+  const runCycle = async (): Promise<void> => {
+    try {
+      const result = await capture()
+      console.log(
+        JSON.stringify(
+          {
+            message: 'Intel in-process snapshot captured',
+            snapshotAt: result.snapshotAt.toISOString(),
+            rowsWritten: result.inserted,
+          },
+          null,
+          2,
+        ),
+      )
+    } catch (error) {
+      console.error('Intel in-process snapshot capture failed:', error)
+    }
+  }
+
+  void runCycle()
+  const intervalMs = intervalSeconds * 1000
+  return setInterval(() => {
+    void runCycle()
+  }, intervalMs)
+}
+
 async function bootstrap(): Promise<void> {
+  const intelConfig = loadIntelRuntimeConfig()
+
   await initDbPool()
   await pingDb()
+
+  const pool = getDbPool()
+  await ensureIntelSchema(pool)
+
+  const intelService = createIntelService(pool, {
+    windowMinutes: intelConfig.windowMinutes,
+    searchResultLimit: intelConfig.searchResultLimit,
+    avoidFailureThreshold: intelConfig.avoidFailureThreshold,
+  })
+  app.use('/intel', createIntelRouter(intelService))
+
+  const snapshotTimer = startIntelSnapshotScheduler(
+    () => intelService.captureSnapshotNow(),
+    intelConfig.snapshotIntervalSeconds,
+  )
 
   const server = app.listen(servicePort, () => {
     console.log(`trust-net DB service listening on http://localhost:${servicePort}`)
@@ -57,6 +113,7 @@ async function bootstrap(): Promise<void> {
     shuttingDown = true
 
     console.log(`Received ${signal}, shutting down DB service...`)
+    clearInterval(snapshotTimer)
 
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
