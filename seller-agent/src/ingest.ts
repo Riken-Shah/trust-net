@@ -74,6 +74,15 @@ interface IngestionResult {
 	durationMs: number;
 }
 
+interface AgentIdentityCandidate {
+	id: string;
+	marketplace_id: string;
+	plan_overlap: number;
+	endpoint_match: number;
+	name_match: number;
+	team_name_match: number;
+}
+
 // ─── Config ───────────────────────────────────────────────────────
 
 const MARKETPLACE_API_URL = "https://nevermined.ai/hackathon/register/api/marketplace?side=all";
@@ -93,6 +102,11 @@ function asTrimmedString(value: unknown): string | null {
 	if (typeof value !== "string") return null;
 	const t = value.trim();
 	return t.length > 0 ? t : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	return value as Record<string, unknown>;
 }
 
 function asStringList(value: unknown): string[] {
@@ -123,6 +137,43 @@ function asTimestamp(value: unknown): Date | null {
 	if (!t) return null;
 	const d = new Date(t);
 	return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function planIdsFromPlanPricing(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const planIds = new Set<string>();
+	for (const item of value) {
+		const record = asRecord(item);
+		const planId = record ? asTrimmedString(record.planDid) : null;
+		if (planId) planIds.add(planId);
+	}
+	return [...planIds];
+}
+
+function pickIdentityCandidate(candidates: AgentIdentityCandidate[]): AgentIdentityCandidate | null {
+	if (candidates.length === 0) return null;
+	if (candidates.length === 1) return candidates[0];
+
+	const overlappingPlans = candidates.filter((candidate) => candidate.plan_overlap > 0);
+	if (overlappingPlans.length === 1) return overlappingPlans[0];
+	if (overlappingPlans.length > 1 && overlappingPlans[0].plan_overlap > overlappingPlans[1].plan_overlap) {
+		return overlappingPlans[0];
+	}
+
+	const metadataMatches = candidates.filter(
+		(candidate) => candidate.endpoint_match + candidate.name_match + candidate.team_name_match > 0,
+	);
+	if (metadataMatches.length === 1) return metadataMatches[0];
+
+	const [best, next] = candidates;
+	if (!next) return best;
+	const bestMetadataScore = best.endpoint_match + best.name_match + best.team_name_match;
+	const nextMetadataScore = next.endpoint_match + next.name_match + next.team_name_match;
+	if (bestMetadataScore > 0 && bestMetadataScore > nextMetadataScore) {
+		return best;
+	}
+
+	return null;
 }
 
 // ─── Plan mapper (from SDK response) ─────────────────────────────
@@ -192,14 +243,16 @@ function mapPlanFromSdk(planId: string, raw: unknown): PlanEnrichment {
 // ─── Phase 1: Marketplace Sync ────────────────────────────────────
 
 function normalizeSeller(raw: unknown): NormalizedSeller | null {
-	const r = raw as Record<string, unknown>;
-	if (!r || typeof r !== "object") return null;
+	const r = asRecord(raw);
+	if (!r) return null;
+	const pricing = asRecord(r.pricing);
 	const marketplaceId = asTrimmedString(r.id);
 	const teamId = asTrimmedString(r.teamId);
-	const walletAddress = asTrimmedString(r.walletAddress);
+	const walletAddress = asTrimmedString(r.walletAddress) ?? teamId;
 	const name = asTrimmedString(r.name);
 	const planIds = asStringList(r.planIds);
-	if (!marketplaceId || !teamId || !walletAddress || !name || planIds.length === 0) return null;
+	const resolvedPlanIds = planIds.length > 0 ? planIds : planIdsFromPlanPricing(r.planPricing);
+	if (!marketplaceId || !teamId || !walletAddress || !name || resolvedPlanIds.length === 0) return null;
 	return {
 		marketplaceId, teamId,
 		nvmAgentId: asTrimmedString(r.nvmAgentId),
@@ -211,14 +264,90 @@ function normalizeSeller(raw: unknown): NormalizedSeller | null {
 		marketplaceReady: asBoolean(r.marketplaceReady),
 		endpointUrl: asTrimmedString(r.endpointUrl),
 		servicesSold: asTrimmedString(r.servicesSold),
-		servicesProvidedPerRequest: asTrimmedString(r.servicesProvidedPerRequest),
-		pricePerRequestDisplay: asTrimmedString(r.pricePerRequest),
-		priceMeteringUnit: asTrimmedString(r.priceMeteringUnit),
+		servicesProvidedPerRequest: asTrimmedString(r.servicesProvidedPerRequest) ?? asTrimmedString(pricing?.servicesPerRequest),
+		pricePerRequestDisplay: asTrimmedString(r.pricePerRequest) ?? asTrimmedString(pricing?.perRequest),
+		priceMeteringUnit: asTrimmedString(r.priceMeteringUnit) ?? asTrimmedString(pricing?.meteringUnit),
 		priceDisplay: asNumber(r.price),
 		apiCreatedAt: asTimestamp(r.createdAt),
 		apiUpdatedAt: asTimestamp(r.updatedAt),
-		planIds,
+		planIds: resolvedPlanIds,
 	};
+}
+
+async function reconcileMarketplaceId(tx: TransactionSql, seller: NormalizedSeller): Promise<boolean> {
+	const existingRows = await tx.unsafe<{ id: string }[]>(
+		`SELECT id FROM agents WHERE marketplace_id=$1 LIMIT 1`,
+		[seller.marketplaceId],
+	);
+	if (existingRows[0]) return false;
+
+	if (seller.nvmAgentId) {
+		const nvmMatches = await tx.unsafe<{ id: string }[]>(
+			`SELECT id FROM agents WHERE nvm_agent_id=$1 AND marketplace_id<>$2 ORDER BY last_synced_at DESC NULLS LAST, id ASC LIMIT 2`,
+			[seller.nvmAgentId, seller.marketplaceId],
+		);
+		if (nvmMatches.length === 1) {
+			const updated = await tx.unsafe<{ id: string }[]>(
+				`UPDATE agents
+				 SET marketplace_id=$1
+				 WHERE id=$2
+				   AND marketplace_id<>$1
+				   AND NOT EXISTS (
+				     SELECT 1
+				     FROM agents current
+				     WHERE current.marketplace_id=$1
+				       AND current.id<>$2
+				   )
+				 RETURNING id`,
+				[seller.marketplaceId, nvmMatches[0].id],
+			);
+			return Boolean(updated[0]);
+		}
+	}
+
+	const candidates = await tx.unsafe<AgentIdentityCandidate[]>(
+		`SELECT
+		   a.id,
+		   a.marketplace_id,
+		   COUNT(*) FILTER (WHERE services.nvm_plan_id = ANY($3::text[]))::int AS plan_overlap,
+		   CASE WHEN a.endpoint_url IS NOT DISTINCT FROM $4 THEN 1 ELSE 0 END::int AS endpoint_match,
+		   CASE WHEN a.name IS NOT DISTINCT FROM $5 THEN 1 ELSE 0 END::int AS name_match,
+		   CASE WHEN a.team_name IS NOT DISTINCT FROM $6 THEN 1 ELSE 0 END::int AS team_name_match
+		 FROM agents a
+		 LEFT JOIN agent_services services
+		   ON services.agent_id = a.id
+		  AND services.is_active = TRUE
+		 WHERE (a.team_id=$1 OR a.wallet_address=$2)
+		   AND a.marketplace_id<>$7
+		 GROUP BY a.id, a.marketplace_id, a.endpoint_url, a.name, a.team_name, a.last_synced_at
+		 ORDER BY
+		   plan_overlap DESC,
+		   endpoint_match DESC,
+		   name_match DESC,
+		   team_name_match DESC,
+		   a.last_synced_at DESC NULLS LAST,
+		   a.id ASC`,
+		[seller.teamId, seller.walletAddress, seller.planIds, seller.endpointUrl, seller.name, seller.teamName, seller.marketplaceId],
+	);
+
+	const match = pickIdentityCandidate(candidates);
+	if (!match) return false;
+
+	const updated = await tx.unsafe<{ id: string }[]>(
+		`UPDATE agents
+		 SET marketplace_id=$1
+		 WHERE id=$2
+		   AND marketplace_id<>$1
+		   AND NOT EXISTS (
+		     SELECT 1
+		     FROM agents current
+		     WHERE current.marketplace_id=$1
+		       AND current.id<>$2
+		   )
+		 RETURNING id`,
+		[seller.marketplaceId, match.id],
+	);
+	return Boolean(updated[0]);
 }
 
 async function enrichPlans(planIds: string[], nvmApiKey: string, nvmEnvironment: string): Promise<Map<string, PlanEnrichment>> {
@@ -260,6 +389,7 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 	// Persist in a transaction
 	const stats = await sql.begin(async (tx: TransactionSql) => {
 		let agentsUpserted = 0;
+		let marketplaceIdsReconciled = 0;
 		const agentIdByMid = new Map<string, string>();
 
 		// Dedup sellers by marketplaceId
@@ -267,6 +397,9 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 		for (const s of sellers) deduped.set(s.marketplaceId, s);
 
 		for (const seller of deduped.values()) {
+			if (await reconcileMarketplaceId(tx, seller)) {
+				marketplaceIdsReconciled++;
+			}
 			const rows = await tx.unsafe<{ id: string; marketplace_id: string }[]>(
 				`INSERT INTO agents (marketplace_id, team_id, nvm_agent_id, wallet_address, team_name, name, description, category, keywords, marketplace_ready, endpoint_url, services_sold, services_provided_per_req, price_per_request_display, price_metering_unit, price_display, api_created_at, api_updated_at, last_synced_at, is_active)
 				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW(),TRUE)
@@ -349,7 +482,7 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 			await tx.unsafe(`UPDATE plans SET is_active=FALSE WHERE is_active=TRUE AND NOT (nvm_plan_id = ANY($1::text[]))`, [allPlanIds]);
 		}
 
-		return { agentsUpserted, plansUpserted: allPlanIds.length, agentServicesUpserted };
+		return { agentsUpserted, marketplaceIdsReconciled, plansUpserted: allPlanIds.length, agentServicesUpserted };
 	});
 
 	return { fetchedSellers: data.sellers.length, normalized: sellers.length, plansEnriched: planEnrichments.size, ...stats };
