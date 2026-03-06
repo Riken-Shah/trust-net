@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import postgres from "postgres";
+import { runIngestion } from "./ingest.js";
 
 // ─── x402 Payment Types ─────────────────────────────────────────
 interface X402PaymentRequired {
@@ -309,5 +310,13 @@ export default {
 		}
 
 		return new Response("Not found", { status: 404 });
+	},
+
+	async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+		ctx.waitUntil(
+			runIngestion(env)
+				.then((result) => console.log("Ingestion complete:", JSON.stringify(result)))
+				.catch((err) => console.error("Ingestion failed:", err)),
+		);
 	},
 };

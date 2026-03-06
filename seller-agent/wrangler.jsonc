@@ -31,5 +31,8 @@
 			"binding": "HYPERDRIVE",
 			"id": "6c06a2bc37b44bb1b1053b78cba6bf88"
 		}
-	]
+	],
+	"triggers": {
+		"crons": ["*/5 * * * *"]
+	}
 }

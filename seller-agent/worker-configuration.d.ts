@@ -13,6 +13,9 @@ declare namespace Cloudflare {
 		WORKER_URL?: string;
 		NVM_PLAN_ID: string;
 		SELLER_AGENT_ID?: string;
+		NVM_API_KEY: string;
+		NVM_ENVIRONMENT?: string;
+		ETHERSCAN_API_KEY: string;
 	}
 }
 interface Env extends Cloudflare.Env {}
