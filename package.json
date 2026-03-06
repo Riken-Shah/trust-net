@@ -16,7 +16,7 @@
     "test:ingestion:integration": "node --test --import tsx src/ingestion/ingestion.integration.test.ts"
   },
   "dependencies": {
-    "@nevermined-io/payments": "1.1.5",
+    "@nevermined-io/payments": "^0.9.3",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "pg": "^8.13.1"
