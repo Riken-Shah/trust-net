@@ -3,8 +3,20 @@ import express, { type Request, type Response } from 'express'
 import { Payments, type EnvironmentName } from '@nevermined-io/payments'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-// @ts-expect-error — internal SDK module, needed to pass HTTP headers to paywall
-import { requestContextStorage } from '@nevermined-io/payments/dist/mcp/http/mcp-handler.js'
+import { createRequire } from 'module'
+
+// Load the SDK's requestContextStorage (AsyncLocalStorage instance) that the
+// paywall reads via getCurrentRequestContext(). We use createRequire to bypass
+// the package.json "exports" restriction on internal paths.
+const require = createRequire(import.meta.url)
+const { requestContextStorage } = require('@nevermined-io/payments/dist/mcp/http/mcp-handler.js') as {
+  requestContextStorage: import('async_hooks').AsyncLocalStorage<{
+    headers: Record<string, string | string[] | undefined>
+    method?: string
+    url?: string
+    ip?: string
+  }>
+}
 
 import {
   closeDbPool,
@@ -206,7 +218,7 @@ async function bootstrap(): Promise<void> {
       await server.connect(transport as unknown as import('@modelcontextprotocol/sdk/shared/transport.js').Transport)
 
       // Run within requestContextStorage so the paywall can read Authorization header
-      const requestContext = { headers: req.headers, method: req.method, url: req.url, ip: req.ip }
+      const requestContext = { headers: req.headers, method: req.method, url: req.url, ip: req.ip ?? '' }
       await requestContextStorage.run(requestContext, () =>
         transport.handleRequest(req, res, req.body),
       )
