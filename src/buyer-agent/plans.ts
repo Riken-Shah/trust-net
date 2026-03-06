@@ -34,12 +34,23 @@ function comparableUsdPrice(plan: SellerPlan): number | null {
   return null
 }
 
-export function selectCheapestPlan(plans: SellerPlan[]): SellerPlan | null {
+function isCryptoOrderable(plan: SellerPlan): boolean {
+  return plan.fiatAmountCents === null
+}
+
+export function selectCheapestPlan(plans: SellerPlan[], hasCardDelegation = false): SellerPlan | null {
   if (plans.length === 0) {
     return null
   }
 
-  const ranked = plans.map((plan) => ({
+  // With card delegation, all plans are orderable (fiat charged via delegated card)
+  // Without it, only crypto plans work (fiat requires Stripe checkout)
+  const candidates = hasCardDelegation ? plans : plans.filter(isCryptoOrderable)
+  if (candidates.length === 0) {
+    return null
+  }
+
+  const ranked = candidates.map((plan) => ({
     plan,
     comparableUsdPrice: comparableUsdPrice(plan),
   }))

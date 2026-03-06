@@ -45,6 +45,7 @@ test('purchaseViaX402 returns successful settlement metadata', async () => {
       normalizedEndpointUrl: 'http://localhost:3000/data',
       protocolDetails: {},
       timeoutMs: 1000,
+      cardDelegation: null,
     })
 
     assert.equal(result.purchaseSuccess, true)
@@ -90,6 +91,7 @@ test('purchaseViaMcp returns explicit failure when service cannot map to a tool'
       normalizedEndpointUrl: 'http://localhost:3000/mcp',
       protocolDetails: { mcpUrl: 'http://localhost:3000/mcp' },
       timeoutMs: 1000,
+      cardDelegation: null,
     })
 
     assert.equal(result.purchaseSuccess, false)
@@ -148,6 +150,7 @@ test('purchaseViaMcp can succeed even when initialize is rejected', async () => 
       normalizedEndpointUrl: 'http://localhost:3000/mcp',
       protocolDetails: { mcpUrl: 'http://localhost:3000/mcp' },
       timeoutMs: 1000,
+      cardDelegation: null,
     })
 
     assert.equal(result.purchaseSuccess, true)
@@ -181,6 +184,7 @@ test('purchaseViaA2A returns failure when no matching skill is available', async
     normalizedEndpointUrl: 'http://localhost:9000/a2a/',
     protocolDetails: { a2aBaseUrl: 'http://localhost:9000/a2a/' },
     timeoutMs: 1000,
+    cardDelegation: null,
   })
 
   assert.equal(result.purchaseSuccess, false)

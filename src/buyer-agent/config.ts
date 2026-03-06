@@ -72,9 +72,9 @@ function parseEnvironment(raw: string): BuyerAgentConfig['nvmEnvironment'] {
 }
 
 export function loadBuyerAgentConfig(env: NodeJS.ProcessEnv = process.env): BuyerAgentConfig {
-  const nvmApiKey = getTrimmedEnv('NVM_API_KEY', env)
+  const nvmApiKey = getTrimmedEnv('NVM_BUYER_API_KEY', env) || getTrimmedEnv('NVM_API_KEY', env)
   if (!nvmApiKey) {
-    throw new Error('NVM_API_KEY is required.')
+    throw new Error('NVM_BUYER_API_KEY (or NVM_API_KEY) is required.')
   }
 
   const nvmEnvironment = parseEnvironment(getTrimmedEnv('NVM_ENVIRONMENT', env) || 'sandbox')
@@ -98,5 +98,6 @@ export function loadBuyerAgentConfig(env: NodeJS.ProcessEnv = process.env): Buye
       'BUYER_AGENT_INCLUDE_VERIFIED_TARGET',
       false,
     ),
+    cardDelegation: null,
   }
 }

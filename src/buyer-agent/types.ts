@@ -1,6 +1,12 @@
 export type SellerProtocol = 'a2a' | 'mcp' | 'x402_http' | 'unknown'
 export type McpCapabilityKind = 'tool' | 'prompt' | 'resource'
 
+export interface CardDelegation {
+  paymentMethodId: string
+  spendingLimitCents: number
+  durationSecs: number
+}
+
 export interface BuyerAgentConfig {
   nvmApiKey: string
   nvmEnvironment: 'sandbox' | 'staging_sandbox' | 'live'
@@ -11,6 +17,7 @@ export interface BuyerAgentConfig {
   maxSellers: number | null
   targetSeller: string | null
   includeVerifiedTarget: boolean
+  cardDelegation: CardDelegation | null
 }
 
 export interface SellerPlan {

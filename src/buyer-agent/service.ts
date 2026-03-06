@@ -27,6 +27,7 @@ import { ensureBuyerAgentSchema } from './schema.js'
 import {
   type BuyerAgentConfig,
   type BuyerAgentRunSummary,
+  type CardDelegation,
   type DiscoveredOffer,
   type PurchaseResult,
   type SellerCandidate,
@@ -90,6 +91,24 @@ function extractA2AAgentId(details: Record<string, unknown>): string | null {
   return null
 }
 
+async function resolveNvmAgentIdFromPlans(payments: any, plans: { nvmPlanId: string }[]): Promise<string | null> {
+  for (const plan of plans) {
+    try {
+      const result = await payments.plans.getAgentsAssociatedToAPlan(plan.nvmPlanId)
+      const agents = result?.agents
+      if (Array.isArray(agents) && agents.length > 0) {
+        const agentId = agents[0].id
+        if (typeof agentId === 'string' && agentId.trim()) {
+          return agentId
+        }
+      }
+    } catch {
+      // Plan lookup failed — try next plan
+    }
+  }
+  return null
+}
+
 function buildUnknownProtocolPurchase(reason: string): PurchaseResult {
   return {
     purchaseSuccess: false,
@@ -116,6 +135,7 @@ async function purchaseService(
   protocolDetails: Record<string, unknown>,
   service: ServiceTarget,
   discoveredOffers: DiscoveredOffer[],
+  cardDelegation: CardDelegation | null,
 ): Promise<PurchaseResult> {
   if (protocol === 'x402_http') {
     return purchaseViaX402({
@@ -126,6 +146,7 @@ async function purchaseService(
       normalizedEndpointUrl,
       protocolDetails,
       timeoutMs: config.timeoutMs,
+      cardDelegation,
     })
   }
 
@@ -150,6 +171,7 @@ async function purchaseService(
       normalizedEndpointUrl,
       protocolDetails,
       timeoutMs: config.timeoutMs,
+      cardDelegation,
     })
   }
 
@@ -165,16 +187,22 @@ async function purchaseService(
         discoveredOffers,
       )
 
+    let a2aAgentId = extractA2AAgentId(protocolDetails) ?? seller.nvmAgentId
+    if (!a2aAgentId) {
+      a2aAgentId = await resolveNvmAgentIdFromPlans(payments, seller.plans)
+    }
+
     return purchaseViaA2A({
       payments,
       planId,
-      sellerAgentId: extractA2AAgentId(protocolDetails) ?? seller.nvmAgentId,
+      sellerAgentId: a2aAgentId,
       serviceName: service.displayName,
       matchedSkillName: matchedOffer?.name ?? null,
       discoveredOffers,
       normalizedEndpointUrl,
       protocolDetails,
       timeoutMs: config.timeoutMs,
+      cardDelegation,
     })
   }
 
@@ -191,6 +219,25 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
     environment: config.nvmEnvironment,
   } as any)
 
+  // Auto-detect card delegation
+  let cardDelegation = config.cardDelegation
+  if (!cardDelegation) {
+    try {
+      const methods = await payments.delegation.listPaymentMethods()
+      const firstMethod = methods[0]
+      if (firstMethod) {
+        cardDelegation = {
+          paymentMethodId: firstMethod.id,
+          spendingLimitCents: 1000,
+          durationSecs: 3600,
+        }
+        console.log(`Card delegation enabled: ${firstMethod.brand} ****${firstMethod.last4}`)
+      }
+    } catch {
+      // No card enrolled — continue with crypto-only
+    }
+  }
+
   try {
     const sellers = await fetchUnverifiedSellers(pool, {
       maxSellers: config.maxSellers,
@@ -198,8 +245,11 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
       includeVerifiedTarget: config.includeVerifiedTarget,
     })
 
+    console.log(`Buyer-agent: ${sellers.length} unverified seller(s) to scan`)
+
     for (const seller of sellers) {
       summary.sellersScanned += 1
+      console.log(`[${summary.sellersScanned}/${sellers.length}] ${seller.name} — ${seller.endpointUrl}`)
 
       const endpoint = normalizeEndpointUrl(seller.endpointUrl)
       if (!endpoint.valid || !endpoint.normalizedUrl) {
@@ -213,7 +263,7 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
         continue
       }
 
-      const selectedPlan = selectCheapestPlan(seller.plans)
+      const selectedPlan = selectCheapestPlan(seller.plans, !!cardDelegation)
       if (!selectedPlan) {
         await insertSetupFailure(pool, {
           runId: run.id,
@@ -227,6 +277,7 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
 
       const detection = await detectSellerProtocol(endpoint.normalizedUrl, config.timeoutMs)
       summary.protocolCounts[detection.protocol] += 1
+      console.log(`  protocol: ${detection.protocol}${detection.protocol === 'unknown' ? ` (${detection.reason})` : ''}`)
 
       if (detection.protocol === 'unknown') {
         await insertSetupFailure(pool, {
@@ -241,14 +292,28 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
 
       let discoveredOffers = detection.discoveredOffers
       if (detection.protocol === 'mcp') {
-        discoveredOffers = await discoverMcpCapabilities({
-          payments,
-          planId: selectedPlan.nvmPlanId,
-          sellerAgentId: seller.nvmAgentId,
-          normalizedEndpointUrl: endpoint.normalizedUrl,
-          protocolDetails: detection.details,
-          timeoutMs: config.timeoutMs,
-        })
+        try {
+          discoveredOffers = await discoverMcpCapabilities({
+            payments,
+            planId: selectedPlan.nvmPlanId,
+            sellerAgentId: seller.nvmAgentId,
+            normalizedEndpointUrl: endpoint.normalizedUrl,
+            protocolDetails: detection.details,
+            timeoutMs: config.timeoutMs,
+            cardDelegation,
+          })
+        } catch (mcpError) {
+          const reason = mcpError instanceof Error ? mcpError.message : 'mcp_discovery_error'
+          console.log(`  mcp discovery failed: ${reason}`)
+          await insertSetupFailure(pool, {
+            runId: run.id,
+            seller,
+            protocol: detection.protocol,
+            reason: `mcp_discovery_error: ${reason}`.slice(0, 500),
+            planId: selectedPlan.nvmPlanId,
+          })
+          continue
+        }
 
         if (discoveredOffers.length === 0) {
           await insertSetupFailure(pool, {
@@ -280,6 +345,7 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
 
       for (const service of services) {
         summary.servicesAttempted += 1
+        console.log(`  service: ${service.displayName} (via ${detection.protocol})`)
 
         const purchase = await purchaseService(
           detection.protocol,
@@ -291,6 +357,7 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
           detection.details,
           service,
           discoveredOffers,
+          cardDelegation,
         )
 
         if (purchase.purchaseSuccess) {
@@ -309,6 +376,8 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
         const passed =
           purchase.purchaseSuccess &&
           (judgment.verdict === 'pass' || judgment.overallScore >= config.passScore)
+
+        console.log(`    purchase: ${purchase.purchaseSuccess ? 'OK' : `FAIL (${purchase.error})`}, score: ${judgment.overallScore}, verdict: ${judgment.verdict}, passed: ${passed}`)
 
         if (passed) {
           sellerHasPassingService = true

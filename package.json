@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "buyer-agent:run": "tsx src/buyer-agent/runOnce.ts",
+    "buyer-agent:verify": "BUYER_AGENT_PASS_SCORE=1 tsx src/buyer-agent/runOnce.ts",
+    "buyer-agent:verify:one": "BUYER_AGENT_PASS_SCORE=1 bash scripts/test-buyer-agent-one-seller.sh",
     "buyer-agent:run:one": "bash scripts/test-buyer-agent-one-seller.sh",
     "ingest": "tsx src/ingestion/run.ts",
     "ingest:reset": "tsx src/ingestion/reset.ts",

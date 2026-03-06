@@ -4,7 +4,7 @@ import {
   parseMcpResourceOffers,
   parseMcpToolOffers,
 } from '../protocol.js'
-import { type DiscoveredOffer, type PurchaseResult } from '../types.js'
+import { type CardDelegation, type DiscoveredOffer, type PurchaseResult } from '../types.js'
 
 interface McpPurchaseInput {
   payments: any
@@ -15,6 +15,7 @@ interface McpPurchaseInput {
   normalizedEndpointUrl: string
   protocolDetails: Record<string, unknown>
   timeoutMs: number
+  cardDelegation: CardDelegation | null
 }
 
 interface McpDiscoveryInput {
@@ -24,6 +25,7 @@ interface McpDiscoveryInput {
   normalizedEndpointUrl: string
   protocolDetails: Record<string, unknown>
   timeoutMs: number
+  cardDelegation: CardDelegation | null
 }
 
 interface JsonRpcResponse {
@@ -75,6 +77,7 @@ async function callJsonRpc(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
         Authorization: authorization,
       },
       body: JSON.stringify(body),
@@ -157,16 +160,47 @@ async function ensureMcpAuthorization(
   payments: any,
   planId: string,
   sellerAgentId: string | null,
+  cardDelegation: CardDelegation | null = null,
 ): Promise<string> {
-  const balance = await payments.plans.getPlanBalance(planId)
-  if (!balance.isSubscriber || Number(balance.balance ?? 0) <= 0) {
-    await payments.plans.orderPlan(planId)
+  // With card delegation, the facilitator handles charging — skip orderPlan
+  if (!cardDelegation) {
+    const balance = await payments.plans.getPlanBalance(planId)
+    if (!balance.isSubscriber || Number(balance.balance ?? 0) <= 0) {
+      const orderResult = await payments.plans.orderPlan(planId)
+      if (orderResult && !orderResult.success) {
+        throw new Error('mcp_plan_order_failed')
+      }
+    }
   }
 
-  const token = await payments.x402.getX402AccessToken(
-    planId,
-    sellerAgentId ?? undefined,
-  )
+  const tokenOptions = cardDelegation
+    ? {
+        scheme: 'nvm:card-delegation' as any,
+        delegationConfig: {
+          providerPaymentMethodId: cardDelegation.paymentMethodId,
+          spendingLimitCents: cardDelegation.spendingLimitCents,
+          durationSecs: cardDelegation.durationSecs,
+        },
+      }
+    : undefined
+
+  let token: any
+  if (sellerAgentId) {
+    try {
+      token = await payments.x402.getX402AccessToken(
+        planId, sellerAgentId, undefined, undefined, undefined, tokenOptions,
+      )
+    } catch {
+      // Agent ID might not exist on Nevermined — retry without it
+      token = await payments.x402.getX402AccessToken(
+        planId, undefined, undefined, undefined, undefined, tokenOptions,
+      )
+    }
+  } else {
+    token = await payments.x402.getX402AccessToken(
+      planId, undefined, undefined, undefined, undefined, tokenOptions,
+    )
+  }
   const accessToken = token.accessToken
   if (!accessToken || typeof accessToken !== 'string') {
     throw new Error('mcp_token_generation_failed')
@@ -303,6 +337,7 @@ export async function discoverMcpCapabilities(input: McpDiscoveryInput): Promise
     input.payments,
     input.planId,
     input.sellerAgentId,
+    input.cardDelegation,
   )
 
   await callJsonRpc(
@@ -382,6 +417,7 @@ export async function purchaseViaMcp(input: McpPurchaseInput): Promise<PurchaseR
       input.payments,
       input.planId,
       input.sellerAgentId,
+      input.cardDelegation,
     )
 
     const initialize = await callJsonRpc(

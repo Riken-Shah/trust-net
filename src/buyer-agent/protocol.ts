@@ -257,6 +257,93 @@ function parsePricingOffers(payload: unknown): DiscoveredOffer[] {
   return dedupeOffers(offers)
 }
 
+function extractPaymentScheme(agentCard: Record<string, unknown>): string | null {
+  // Check explicit payment.scheme fields
+  const service = agentCard.service
+  if (service && typeof service === 'object') {
+    const payment = (service as { payment?: unknown }).payment
+    if (payment && typeof payment === 'object') {
+      const scheme = (payment as { scheme?: unknown }).scheme
+      if (typeof scheme === 'string') {
+        return scheme.toLowerCase()
+      }
+    }
+  }
+
+  const payment = agentCard.payment
+  if (payment && typeof payment === 'object') {
+    const scheme = (payment as { scheme?: unknown }).scheme
+    if (typeof scheme === 'string') {
+      return scheme.toLowerCase()
+    }
+  }
+
+  // Check if description mentions x402 or payment-signature header
+  const description = typeof agentCard.description === 'string' ? agentCard.description.toLowerCase() : ''
+  if (description.includes('x402') || description.includes('payment-signature')) {
+    return 'x402'
+  }
+
+  // Check if skills have explicit HTTP endpoint URLs (x402 pattern, not A2A JSON-RPC)
+  const skills = Array.isArray(agentCard.skills) ? agentCard.skills : []
+  for (const skill of skills) {
+    if (!skill || typeof skill !== 'object') {
+      continue
+    }
+    const endpoint = (skill as { endpoint?: unknown }).endpoint
+    if (typeof endpoint === 'string' && (endpoint.startsWith('http') || endpoint.startsWith('/'))) {
+      return 'x402'
+    }
+  }
+
+  return null
+}
+
+function isRemoteUrl(candidate: string): boolean {
+  try {
+    const url = new URL(candidate)
+    const host = url.hostname.toLowerCase()
+    return host !== 'localhost' && host !== '127.0.0.1' && host !== '0.0.0.0'
+  } catch {
+    return false
+  }
+}
+
+function extractServiceEndpoint(agentCard: Record<string, unknown>): string | null {
+  // Check service.endpoint first
+  const service = agentCard.service
+  if (service && typeof service === 'object') {
+    const endpoint = (service as { endpoint?: unknown }).endpoint
+    if (typeof endpoint === 'string' && endpoint.trim() && isRemoteUrl(endpoint)) {
+      return endpoint
+    }
+  }
+
+  // Check first skill's endpoint (x402 agents often list endpoints per-skill)
+  const baseUrl = typeof agentCard.url === 'string' ? agentCard.url : null
+  const skills = Array.isArray(agentCard.skills) ? agentCard.skills : []
+  for (const skill of skills) {
+    if (!skill || typeof skill !== 'object') {
+      continue
+    }
+    const endpoint = (skill as { endpoint?: unknown }).endpoint
+    if (typeof endpoint !== 'string' || !endpoint.trim()) {
+      continue
+    }
+    // Resolve relative paths against the agent card's base URL
+    if (endpoint.startsWith('/') && baseUrl) {
+      const resolved = new URL(endpoint, baseUrl).toString()
+      if (isRemoteUrl(resolved)) {
+        return resolved
+      }
+    } else if (isRemoteUrl(endpoint)) {
+      return endpoint
+    }
+  }
+
+  return null
+}
+
 function getPathBasedCardUrl(endpoint: URL): string | null {
   if (endpoint.pathname === '/') {
     return null
@@ -398,6 +485,22 @@ async function probeA2A(endpoint: URL, timeoutMs: number): Promise<ProtocolDetec
         continue
       }
 
+      // If the agent card explicitly declares x402, treat it as x402 not A2A
+      const paymentScheme = extractPaymentScheme(agentCard)
+      if (paymentScheme === 'x402') {
+        const serviceEndpoint = extractServiceEndpoint(agentCard) ?? endpoint.toString()
+        const discoveredOffers = parseSkillOffers(agentCard)
+        return {
+          protocol: 'x402_http',
+          reason: 'agent_card_declares_x402',
+          discoveredOffers,
+          details: {
+            paidUrl: serviceEndpoint,
+            agentCard,
+          },
+        }
+      }
+
       const discoveredOffers = parseSkillOffers(agentCard)
       const cardBaseUrl = cardUrl.replace(/\.well-known\/agent\.json$/, '')
 
@@ -533,35 +636,53 @@ async function probePricing(url: string, timeoutMs: number): Promise<DiscoveredO
   }
 }
 
+function isX402Response(response: Response, body: ResponseBody): boolean {
+  if (response.status === 402) {
+    return true
+  }
+
+  // Some servers return 403 with x402 payment info in the body
+  if (response.status === 403 || response.status === 401) {
+    const text = body.rawText.toLowerCase()
+    if (text.includes('payment') && (text.includes('402') || text.includes('x402') || text.includes('payment_required'))) {
+      return true
+    }
+  }
+
+  return false
+}
+
 async function probeX402(endpoint: URL, timeoutMs: number): Promise<ProtocolDetectionResult | null> {
   const paidProbeUrl = getX402PaidProbeUrl(endpoint)
   const pricingUrl = new URL('/pricing', endpoint.origin).toString()
 
-  try {
-    const response = await fetchWithTimeout(
-      paidProbeUrl,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: 'protocol probe' }),
-      },
-      timeoutMs,
-    )
+  // Try multiple probe strategies — some endpoints reject wrong body shapes before payment check
+  const probeStrategies: RequestInit[] = [
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'protocol probe' }) },
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'protocol probe' }) },
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+  ]
 
-    if (response.status === 402 && response.headers.get('payment-required')) {
-      const discoveredOffers = await probePricing(pricingUrl, timeoutMs)
-      return {
-        protocol: 'x402_http',
-        reason: 'x402_402_payment_required_detected',
-        discoveredOffers,
-        details: {
-          paidUrl: paidProbeUrl,
-          pricingUrl,
-        },
+  for (const init of probeStrategies) {
+    try {
+      const response = await fetchWithTimeout(paidProbeUrl, init, timeoutMs)
+      const body = await readResponseBody(response)
+
+      if (isX402Response(response, body)) {
+        const discoveredOffers = await probePricing(pricingUrl, timeoutMs)
+        return {
+          protocol: 'x402_http',
+          reason: 'x402_402_payment_required_detected',
+          discoveredOffers,
+          details: {
+            paidUrl: paidProbeUrl,
+            pricingUrl,
+          },
+        }
       }
+    } catch {
+      // Continue to next strategy.
     }
-  } catch {
-    // Continue to pricing probe.
   }
 
   const discoveredOffers = await probePricing(pricingUrl, timeoutMs)

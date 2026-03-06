@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { normalizeServiceName } from '../offers.js'
-import { type DiscoveredOffer, type PurchaseResult } from '../types.js'
+import { type CardDelegation, type DiscoveredOffer, type PurchaseResult } from '../types.js'
 
 interface A2APurchaseInput {
   payments: any
@@ -13,6 +13,7 @@ interface A2APurchaseInput {
   normalizedEndpointUrl: string
   protocolDetails: Record<string, unknown>
   timeoutMs: number
+  cardDelegation: CardDelegation | null
 }
 
 function resolveA2ABaseUrl(input: A2APurchaseInput): string {
@@ -127,9 +128,27 @@ export async function purchaseViaA2A(input: A2APurchaseInput): Promise<PurchaseR
   const a2aBaseUrl = resolveA2ABaseUrl(input)
 
   try {
-    const balance = await input.payments.plans.getPlanBalance(input.planId)
-    if (!balance.isSubscriber || Number(balance.balance ?? 0) <= 0) {
-      await input.payments.plans.orderPlan(input.planId)
+    // With card delegation, the facilitator handles charging — skip orderPlan
+    if (!input.cardDelegation) {
+      const balance = await input.payments.plans.getPlanBalance(input.planId)
+      if (!balance.isSubscriber || Number(balance.balance ?? 0) <= 0) {
+        const orderResult = await input.payments.plans.orderPlan(input.planId)
+        if (orderResult && !orderResult.success) {
+          return {
+            purchaseSuccess: false,
+            error: 'a2a_plan_order_failed',
+            httpStatus: null,
+            latencyMs: Date.now() - startedAt,
+            requestPayload: { planId: input.planId, service: input.serviceName },
+            responsePayload: orderResult,
+            responseExcerpt: null,
+            txHash: null,
+            creditsRedeemed: null,
+            remainingBalance: null,
+            paymentMeta: null,
+          }
+        }
+      }
     }
 
     const resolvedAgentId = input.sellerAgentId ?? null
@@ -166,11 +185,19 @@ export async function purchaseViaA2A(input: A2APurchaseInput): Promise<PurchaseR
       }
     }
 
-    const client = await input.payments.a2a.getClient({
+    const clientOptions: Record<string, unknown> = {
       agentBaseUrl: a2aBaseUrl,
       agentId: resolvedAgentId,
       planId: input.planId,
-    })
+    }
+    if (input.cardDelegation) {
+      clientOptions.cardDelegation = {
+        providerPaymentMethodId: input.cardDelegation.paymentMethodId,
+        spendingLimitCents: input.cardDelegation.spendingLimitCents,
+        durationSecs: input.cardDelegation.durationSecs,
+      }
+    }
+    const client = await input.payments.a2a.getClient(clientOptions)
 
     const requestPayload = {
       message: {

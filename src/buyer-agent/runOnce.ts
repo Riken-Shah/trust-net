@@ -26,11 +26,12 @@ async function main(): Promise<void> {
 }
 
 void main()
+  .then(async () => {
+    await closeDbPool()
+    process.exit(0)
+  })
   .catch(async (error) => {
     console.error('Buyer-agent verification run failed:', error)
     await closeDbPool()
     process.exit(1)
-  })
-  .finally(async () => {
-    await closeDbPool()
   })
