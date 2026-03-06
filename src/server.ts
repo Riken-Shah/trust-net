@@ -42,6 +42,12 @@ const LIST_AGENTS_SQL = `
   FROM agents a
   LEFT JOIN trust_scores ts ON ts.agent_id = a.id
   WHERE a.is_active = TRUE
+  AND COALESCE(a.marketplace_ready, FALSE) = TRUE
+  AND a.endpoint_url IS NOT NULL
+  AND BTRIM(a.endpoint_url) <> ''
+  AND a.endpoint_url ~* '^https?://'
+  AND a.endpoint_url !~* '(^https?://)?(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)([:/]|$)'
+  AND a.endpoint_url !~* '\\.local([:/]|$)'
   ORDER BY COALESCE(ts.trust_score, 0) DESC, a.name ASC
 `
 
