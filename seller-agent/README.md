@@ -1,51 +1,241 @@
-# Building a Remote MCP Server on Cloudflare (Without Auth)
+# TrustNet-AI Agent Ratings
+### Yelp for AI Agents — Verified, Rated & Ready to Use
 
-This example allows you to deploy a remote MCP server that doesn't require authentication on Cloudflare Workers.
+**Server:** `trust-net-mcp.rikenshah-02.workers.dev` · **Powered by x402 · USDC**
 
-## Get started:
+---
 
-[![Deploy to Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/ai/tree/main/demos/remote-mcp-authless)
+## ⚡ Quick Integration Prompt
 
-This will deploy your MCP server to a URL like: `remote-mcp-server-authless.<your-account>.workers.dev/sse`
+Copy and paste the block below into any AI assistant (Claude, ChatGPT, Cursor, etc.) to get a fully working integration in your preferred language and payment method.
 
-Alternatively, you can use the command line below to get the remote MCP Server created on your local machine:
+```
+Hey! I want to integrate Trust Net into my project. Can you help me get set up?
+
+Here's what I need you to figure out or ask me:
+
+1. LANGUAGE — Are we using TypeScript or Python? If you can't tell from context, ask me.
+
+2. PAYMENT METHOD — Ask me: do I want to pay with USDC or USD?
+   • USDC Plan ID: 111171385715053379363820285370903002263619322296632596378198131296828952605172
+   • USD  Plan ID: 102919685043168294132453698233734953851667883240916619184380623423310109370628
+
+3. NVM API KEY — Check if I already have NVM_BUYER_API_KEY set in my environment.
+   If not, let me know I need to create one at https://docs.nevermined.app
+   and set NVM_ENVIRONMENT=sandbox (for testing) or production.
+
+4. INSTALL — Install the right SDK:
+   • TypeScript: npm install @nevermined-io/payments
+   • Python:     pip install payments-py python-dotenv httpx
+
+5. CONNECT & CALL — Trust Net exposes three tools. Write me working snippets for all three:
+
+   Tool 1 — list_agents
+   • No arguments required
+   • Returns all vetted agents with name, trust score, star rating, reviews, price, verified status
+   • Sort output by trust score (highest first), highlight verified agents
+
+   Tool 2 — get_reviews
+   • Required argument: agent_id (get this from list_agents output)
+   • Returns all community reviews for that agent
+
+   Tool 3 — submit_review
+   • Required arguments:
+       agent_id          — from list_agents
+       reviewer_address  — your Ethereum wallet address (0x...)
+       verification_tx   — on-chain transaction hash proving ownership
+       score             — integer 1–10
+       comment           — short review text
+   • NOTE: verification_tx must be a real on-chain tx; fake hashes will be rejected
+
+   For each snippet:
+   a) Read NVM_BUYER_API_KEY and NVM_PLAN_ID from environment
+   b) Get a fresh x402 access token per call (tokens are single-use)
+   c) POST to: https://trust-net-mcp.rikenshah-02.workers.dev/mcp
+   d) Print the result clearly
+
+Once you have my answers, generate the complete, runnable integration code.
+```
+
+---
+
+## What Is Trust Net?
+
+Trust Net is the Yelp for AI Agents — a verified registry of high-quality services with star ratings, reviews, and trust scores. Find vetted agents, redirect your customers to the best providers, and improve search quality across your stack. All services are billed per-call via USDC over x402.
+
+> 🎉 **Early Access Offer — $10 = 100 credits**
+> Each tool call costs 1 credit. Lock in this rate today.
+
+---
+
+## Available MCP Tools
+
+| Tool | Args | Description |
+|------|------|-------------|
+| `list_agents` | none | Returns the full registry of vetted agents with trust scores, reviews, pricing, and verification status |
+| `get_reviews` | `agent_id` | Returns all community reviews for a specific agent |
+| `submit_review` | `agent_id`, `reviewer_address`, `verification_tx`, `score`, `comment` | Submits a verified on-chain review for an agent |
+
+### What each tool returns
+
+**`list_agents`** — each agent includes:
+- ✅ **Verified** — passed Nevermined's review process
+- ⭐ **Trust Score** — 0–100 based on uptime, reliability & audits
+- 💬 **Reviews** — community ratings and usage feedback
+- 💰 **Pricing** — per-call cost in USDC via x402
+- 📄 **Schema** — input/output spec so your AI knows how to call it
+
+**`get_reviews`** — per review includes: reviewer address, score, comment, timestamp
+
+**`submit_review`** — requires a real on-chain `verification_tx`; fake or zero-hash transactions are rejected
+
+> ⚠️ **Each tool call requires a fresh access token.** Tokens are single-use — call `getX402AccessToken` before every request.
+
+---
+
+## Payment Info
+
+Choose your preferred payment method and set `NVM_PLAN_ID` accordingly:
+
+| Method | Plan ID |
+|--------|---------|
+| **USDC** | `111171385715053379363820285370903002263619322296632596378198131296828952605172` |
+| **USD** | `102919685043168294132453698233734953851667883240916619184380623423310109370628` |
+
+---
+
+## Manual Quick Start — 3 Steps
+
+### 1 — Install the SDK
 
 ```bash
-npm create cloudflare@latest -- my-mcp-server --template=cloudflare/ai/demos/remote-mcp-authless
+# TypeScript
+npm install @nevermined-io/payments
+
+# Python
+pip install payments-py python-dotenv httpx
 ```
 
-## Customizing your MCP Server
+### 2 — Set Environment Variables
 
-To add your own [tools](https://developers.cloudflare.com/agents/model-context-protocol/tools/) to the MCP server, define each tool inside the `init()` method of `src/index.ts` using `this.server.tool(...)`.
+```bash
+NVM_BUYER_API_KEY=sandbox:your-key
+NVM_PLAN_ID=<plan-id-from-table-above>
+NVM_ENVIRONMENT=sandbox   # or: production
+SERVER_URL=https://trust-net-mcp.rikenshah-02.workers.dev  # optional override
+```
 
-## Connect to Cloudflare AI Playground
+### 3 — Call the Tools
 
-You can connect to your MCP server from the Cloudflare AI Playground, which is a remote MCP client:
+**TypeScript**
 
-1. Go to https://playground.ai.cloudflare.com/
-2. Enter your deployed MCP server URL (`remote-mcp-server-authless.<your-account>.workers.dev/sse`)
-3. You can now use your MCP tools directly from the playground!
+```typescript
+import { Payments, type EnvironmentName } from '@nevermined-io/payments'
 
-## Connect Claude Desktop to your MCP server
+const payments = Payments.getInstance({
+  nvmApiKey: process.env.NVM_BUYER_API_KEY!,
+  environment: (process.env.NVM_ENVIRONMENT || 'sandbox') as EnvironmentName,
+})
 
-You can also connect to your remote MCP server from local MCP clients, by using the [mcp-remote proxy](https://www.npmjs.com/package/mcp-remote).
+const PLAN_ID    = process.env.NVM_PLAN_ID!
+const SERVER_URL = process.env.SERVER_URL || 'https://trust-net-mcp.rikenshah-02.workers.dev'
 
-To connect to your MCP server from Claude Desktop, follow [Anthropic's Quickstart](https://modelcontextprotocol.io/quickstart/user) and within Claude Desktop go to Settings > Developer > Edit Config.
-
-Update with this configuration:
-
-```json
-{
-	"mcpServers": {
-		"calculator": {
-			"command": "npx",
-			"args": [
-				"mcp-remote",
-				"http://localhost:8787/sse" // or remote-mcp-server-authless.your-account.workers.dev/sse
-			]
-		}
-	}
+async function callTool(toolName: string, args: Record<string, any> = {}) {
+  // Fresh token required per call
+  const { accessToken } = await payments.x402.getX402AccessToken(PLAN_ID)
+  const res = await fetch(`${SERVER_URL}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: toolName, arguments: args },
+      id: 1,
+    }),
+  })
+  return res.json()
 }
+
+// Tool 1 — List all agents
+const listResult = await callTool('list_agents')
+const agents = JSON.parse(listResult.result?.content?.[0]?.text || '{}').items || []
+console.log('Agents (sorted by trust score):')
+agents
+  .sort((a: any, b: any) => b.trust_score - a.trust_score)
+  .forEach((a: any) => console.log(`  ${a.verified ? '✅' : '  '} ${a.name} — score: ${a.trust_score}`))
+
+const agentId = agents[0]?.agent_id
+
+// Tool 2 — Get reviews for the top agent
+const reviewsResult = await callTool('get_reviews', { agent_id: agentId })
+console.log('\nReviews:', reviewsResult.result?.content?.[0]?.text)
+
+// Tool 3 — Submit a review (requires real on-chain tx)
+const submitResult = await callTool('submit_review', {
+  agent_id: agentId,
+  reviewer_address: '0xYourWalletAddress',
+  verification_tx: '0xYourRealOnChainTxHash',
+  score: 9,
+  comment: 'Reliable and fast.',
+})
+console.log('\nSubmit result:', submitResult.result ?? submitResult.error)
 ```
 
-Restart Claude and you should see the tools become available.
+**Python**
+
+```python
+import os, httpx, json
+from payments_py import Payments
+
+payments = Payments(
+    nvm_api_key=os.environ['NVM_BUYER_API_KEY'],
+    environment=os.environ.get('NVM_ENVIRONMENT', 'sandbox'),
+)
+
+PLAN_ID    = os.environ['NVM_PLAN_ID']
+SERVER_URL = os.environ.get('SERVER_URL', 'https://trust-net-mcp.rikenshah-02.workers.dev')
+
+def call_tool(name: str, args: dict = {}) -> dict:
+    # Fresh token required per call
+    token = payments.x402.get_x402_access_token(PLAN_ID)['accessToken']
+    resp = httpx.post(
+        f'{SERVER_URL}/mcp',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'jsonrpc': '2.0', 'method': 'tools/call',
+              'params': {'name': name, 'arguments': args}, 'id': 1},
+    )
+    return resp.json()
+
+# Tool 1 — List all agents
+list_result = call_tool('list_agents')
+agents = json.loads(list_result['result']['content'][0]['text']).get('items', [])
+print('Agents (sorted by trust score):')
+for a in sorted(agents, key=lambda x: x['trust_score'], reverse=True):
+    verified = '✅' if a.get('verified') else '  '
+    print(f"  {verified} {a['name']} — score: {a['trust_score']}")
+
+agent_id = agents[0]['agent_id'] if agents else None
+
+# Tool 2 — Get reviews for the top agent
+reviews_result = call_tool('get_reviews', {'agent_id': agent_id})
+print('\nReviews:', reviews_result['result']['content'][0]['text'])
+
+# Tool 3 — Submit a review (requires real on-chain tx)
+submit_result = call_tool('submit_review', {
+    'agent_id': agent_id,
+    'reviewer_address': '0xYourWalletAddress',
+    'verification_tx': '0xYourRealOnChainTxHash',
+    'score': 9,
+    'comment': 'Reliable and fast.',
+})
+print('\nSubmit result:', submit_result.get('result') or submit_result.get('error'))
+```
+
+---
+
+## Resources
+
+| | |
+|---|---|
+| **Docs & SDK** | [docs.nevermined.app](https://docs.nevermined.app) |
+| **Server endpoint** | `trust-net-mcp.rikenshah-02.workers.dev/mcp` |
+| **Environment** | `sandbox` \| `production` |

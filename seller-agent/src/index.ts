@@ -133,6 +133,35 @@ async function verifyBurnTx(txHash: string, reviewerAddress: string): Promise<{ 
 	}
 }
 
+// ─── Multi-plan payment helper ───────────────────────────────────
+
+function getPlanIds(env: Env): string[] {
+	return env.NVM_PLAN_ID.split(",").map(s => s.trim()).filter(Boolean);
+}
+
+interface PaymentAuth {
+	planId: string;
+	paymentRequired: X402PaymentRequired;
+	verification: VerifyResult;
+}
+
+async function verifyPaymentAnyPlan(
+	planIds: string[],
+	agentId: string,
+	token: string,
+	credits: number,
+	endpoint: string,
+): Promise<PaymentAuth | null> {
+	for (const planId of planIds) {
+		const paymentRequired = buildPaymentRequired(planId, { endpoint, agentId, httpVerb: "POST" });
+		const verification = await verifyPermissions(paymentRequired, token, credits);
+		if (verification.isValid) {
+			return { planId, paymentRequired, verification };
+		}
+	}
+	return null;
+}
+
 // ─── MCP Agent (Durable Object) ─────────────────────────────────
 
 export class MyMCP extends McpAgent {
@@ -281,20 +310,19 @@ export default {
 
 		// --- Payment-protected API endpoint ---
 		if (url.pathname === "/api/paid/agents") {
-			const planId = env.NVM_PLAN_ID;
+			const planIds = getPlanIds(env);
 			const agentId = env.SELLER_AGENT_ID || "";
-			if (!planId) {
+			if (planIds.length === 0) {
 				return Response.json({ error: "Server misconfigured: NVM_PLAN_ID not set" }, { status: 500 });
 			}
 
 			const token = request.headers.get("payment-signature");
-			const paymentRequired = buildPaymentRequired(planId, {
-				endpoint: "/api/paid/agents",
-				agentId,
-				httpVerb: request.method,
-			});
-
 			if (!token) {
+				const paymentRequired = buildPaymentRequired(planIds[0], {
+					endpoint: "/api/paid/agents",
+					agentId,
+					httpVerb: request.method,
+				});
 				const encoded = btoa(JSON.stringify(paymentRequired));
 				return new Response(JSON.stringify({ error: "Payment Required" }), {
 					status: 402,
@@ -305,16 +333,16 @@ export default {
 				});
 			}
 
-			// Step 1: Verify
-			const verification = await verifyPermissions(paymentRequired, token, CREDITS_PER_CALL);
-			if (!verification.isValid) {
-				return new Response(JSON.stringify({ error: verification.invalidReason || "Payment verification failed" }), {
+			// Verify against any configured plan
+			const auth = await verifyPaymentAnyPlan(planIds, agentId, token, CREDITS_PER_CALL, "/api/paid/agents");
+			if (!auth) {
+				return new Response(JSON.stringify({ error: "Payment verification failed" }), {
 					status: 402,
 					headers: { "Content-Type": "application/json" },
 				});
 			}
 
-			// Step 2: Execute
+			// Execute
 			let items: unknown[];
 			try {
 				const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
@@ -324,8 +352,8 @@ export default {
 				return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
 			}
 
-			// Step 3: Settle (burn credits)
-			const settlement = await settlePermissions(paymentRequired, token, CREDITS_PER_CALL, verification.agentRequestId);
+			// Settle
+			const settlement = await settlePermissions(auth.paymentRequired, token, CREDITS_PER_CALL, auth.verification.agentRequestId);
 			const paymentResponse = btoa(JSON.stringify(settlement));
 
 			return new Response(JSON.stringify({ items }), {
@@ -347,30 +375,31 @@ export default {
 				const token = authHeader.replace(/^Bearer\s+/i, "");
 				const body = await request.json() as { jsonrpc: string; method: string; params?: Record<string, unknown>; id?: number | string | null };
 
-				// Handle tools/call for list_agents with payment
+				// Handle tools/call (all tools payment-protected, multi-plan)
 				if (body.method === "tools/call") {
 					const toolName = (body.params as any)?.name;
-					const planId = env.NVM_PLAN_ID;
+					const planIds = getPlanIds(env);
 					const agentId = env.SELLER_AGENT_ID || "";
 
-					if (toolName === "list_agents" && planId) {
-						const paymentRequired = buildPaymentRequired(planId, {
-							endpoint: "/mcp",
-							agentId,
-							httpVerb: "POST",
-						});
+					if (planIds.length === 0) {
+						return Response.json({
+							jsonrpc: "2.0",
+							error: { code: -32000, message: "Server misconfigured: no plan IDs" },
+							id: body.id ?? null,
+						}, { status: 500 });
+					}
 
-						// Step 1: Verify
-						const verification = await verifyPermissions(paymentRequired, token, CREDITS_PER_CALL);
-						if (!verification.isValid) {
-							return Response.json({
-								jsonrpc: "2.0",
-								error: { code: -32000, message: verification.invalidReason || "Payment verification failed" },
-								id: body.id ?? null,
-							}, { status: 402 });
-						}
+					// Verify payment against any configured plan
+					const auth = await verifyPaymentAnyPlan(planIds, agentId, token, CREDITS_PER_CALL, "/mcp");
+					if (!auth) {
+						return Response.json({
+							jsonrpc: "2.0",
+							error: { code: -32000, message: "Payment verification failed" },
+							id: body.id ?? null,
+						}, { status: 402 });
+					}
 
-						// Step 2: Execute
+					if (toolName === "list_agents") {
 						let items: unknown[];
 						try {
 							const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
@@ -384,9 +413,7 @@ export default {
 							});
 						}
 
-						// Step 3: Settle
-						const settlement = await settlePermissions(paymentRequired, token, CREDITS_PER_CALL, verification.agentRequestId);
-
+						const settlement = await settlePermissions(auth.paymentRequired, token, CREDITS_PER_CALL, auth.verification.agentRequestId);
 						return Response.json({
 							jsonrpc: "2.0",
 							result: {
@@ -401,17 +428,7 @@ export default {
 						});
 					}
 
-					if (toolName === "submit_review" && planId) {
-						const paymentRequired = buildPaymentRequired(planId, { endpoint: "/mcp", agentId, httpVerb: "POST" });
-						const verification = await verifyPermissions(paymentRequired, token, CREDITS_PER_CALL);
-						if (!verification.isValid) {
-							return Response.json({
-								jsonrpc: "2.0",
-								error: { code: -32000, message: verification.invalidReason || "Payment verification failed" },
-								id: body.id ?? null,
-							}, { status: 402 });
-						}
-
+					if (toolName === "submit_review") {
 						const args = (body.params as any)?.arguments ?? {};
 						try {
 							const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
@@ -443,8 +460,7 @@ export default {
 							]);
 							await sql.end();
 
-							const settlement = await settlePermissions(paymentRequired, token, CREDITS_PER_CALL, verification.agentRequestId);
-
+							const settlement = await settlePermissions(auth.paymentRequired, token, CREDITS_PER_CALL, auth.verification.agentRequestId);
 							return Response.json({
 								jsonrpc: "2.0",
 								result: {
@@ -466,17 +482,7 @@ export default {
 						}
 					}
 
-					if (toolName === "get_reviews" && planId) {
-						const paymentRequired = buildPaymentRequired(planId, { endpoint: "/mcp", agentId, httpVerb: "POST" });
-						const verification = await verifyPermissions(paymentRequired, token, CREDITS_PER_CALL);
-						if (!verification.isValid) {
-							return Response.json({
-								jsonrpc: "2.0",
-								error: { code: -32000, message: verification.invalidReason || "Payment verification failed" },
-								id: body.id ?? null,
-							}, { status: 402 });
-						}
-
+					if (toolName === "get_reviews") {
 						const args = (body.params as any)?.arguments ?? {};
 						try {
 							const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
@@ -491,8 +497,7 @@ export default {
 							const rows = await sql.unsafe(GET_REVIEWS_SQL, [args.agent_id]);
 							await sql.end();
 
-							const settlement = await settlePermissions(paymentRequired, token, CREDITS_PER_CALL, verification.agentRequestId);
-
+							const settlement = await settlePermissions(auth.paymentRequired, token, CREDITS_PER_CALL, auth.verification.agentRequestId);
 							return Response.json({
 								jsonrpc: "2.0",
 								result: {

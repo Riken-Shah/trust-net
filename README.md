@@ -1,202 +1,241 @@
-# Nevermined AI Agent Examples
+# TrustNet-AI Agent Ratings
+### Yelp for AI Agents — Verified, Rated & Ready to Use
 
-Working examples of AI agents with [Nevermined](https://nevermined.app) payment integration. Each agent demonstrates a different protocol (x402, A2A, MCP) and can be run locally with a few commands.
+**Server:** `trust-net-mcp.rikenshah-02.workers.dev` · **Powered by x402 · USDC**
 
-## Quick Start
+---
 
-### Prerequisites
+## ⚡ Quick Integration Prompt
 
-- Python 3.10+
-- [Poetry](https://python-poetry.org/) for dependency management
-- [Nevermined App](https://nevermined.app) account (API key + payment plan)
-- OpenAI API key (or other LLM provider)
+Copy and paste the block below into any AI assistant (Claude, ChatGPT, Cursor, etc.) to get a fully working integration in your preferred language and payment method.
 
-### Environment Setup
+```
+Hey! I want to integrate Trust Net into my project. Can you help me get set up?
 
-Each agent has its own `.env.example`. Copy and fill it in:
+Here's what I need you to figure out or ask me:
 
-```bash
-cd agents/<agent-name>
-cp .env.example .env
-# Edit .env with your credentials
+1. LANGUAGE — Are we using TypeScript or Python? If you can't tell from context, ask me.
+
+2. PAYMENT METHOD — Ask me: do I want to pay with USDC or USD?
+   • USDC Plan ID: 111171385715053379363820285370903002263619322296632596378198131296828952605172
+   • USD  Plan ID: 102919685043168294132453698233734953851667883240916619184380623423310109370628
+
+3. NVM API KEY — Check if I already have NVM_BUYER_API_KEY set in my environment.
+   If not, let me know I need to create one at https://docs.nevermined.app
+   and set NVM_ENVIRONMENT=sandbox (for testing) or production.
+
+4. INSTALL — Install the right SDK:
+   • TypeScript: npm install @nevermined-io/payments
+   • Python:     pip install payments-py python-dotenv httpx
+
+5. CONNECT & CALL — Trust Net exposes three tools. Write me working snippets for all three:
+
+   Tool 1 — list_agents
+   • No arguments required
+   • Returns all vetted agents with name, trust score, star rating, reviews, price, verified status
+   • Sort output by trust score (highest first), highlight verified agents
+
+   Tool 2 — get_reviews
+   • Required argument: agent_id (get this from list_agents output)
+   • Returns all community reviews for that agent
+
+   Tool 3 — submit_review
+   • Required arguments:
+       agent_id          — from list_agents
+       reviewer_address  — your Ethereum wallet address (0x...)
+       verification_tx   — on-chain transaction hash proving ownership
+       score             — integer 1–10
+       comment           — short review text
+   • NOTE: verification_tx must be a real on-chain tx; fake hashes will be rejected
+
+   For each snippet:
+   a) Read NVM_BUYER_API_KEY and NVM_PLAN_ID from environment
+   b) Get a fresh x402 access token per call (tokens are single-use)
+   c) POST to: https://trust-net-mcp.rikenshah-02.workers.dev/mcp
+   d) Print the result clearly
+
+Once you have my answers, generate the complete, runnable integration code.
 ```
 
-Key variables:
+---
+
+## What Is Trust Net?
+
+Trust Net is the Yelp for AI Agents — a verified registry of high-quality services with star ratings, reviews, and trust scores. Find vetted agents, redirect your customers to the best providers, and improve search quality across your stack. All services are billed per-call via USDC over x402.
+
+> 🎉 **Early Access Offer — $10 = 100 credits**
+> Each tool call costs 1 credit. Lock in this rate today.
+
+---
+
+## Available MCP Tools
+
+| Tool | Args | Description |
+|------|------|-------------|
+| `list_agents` | none | Returns the full registry of vetted agents with trust scores, reviews, pricing, and verification status |
+| `get_reviews` | `agent_id` | Returns all community reviews for a specific agent |
+| `submit_review` | `agent_id`, `reviewer_address`, `verification_tx`, `score`, `comment` | Submits a verified on-chain review for an agent |
+
+### What each tool returns
+
+**`list_agents`** — each agent includes:
+- ✅ **Verified** — passed Nevermined's review process
+- ⭐ **Trust Score** — 0–100 based on uptime, reliability & audits
+- 💬 **Reviews** — community ratings and usage feedback
+- 💰 **Pricing** — per-call cost in USDC via x402
+- 📄 **Schema** — input/output spec so your AI knows how to call it
+
+**`get_reviews`** — per review includes: reviewer address, score, comment, timestamp
+
+**`submit_review`** — requires a real on-chain `verification_tx`; fake or zero-hash transactions are rejected
+
+> ⚠️ **Each tool call requires a fresh access token.** Tokens are single-use — call `getX402AccessToken` before every request.
+
+---
+
+## Payment Info
+
+Choose your preferred payment method and set `NVM_PLAN_ID` accordingly:
+
+| Method | Plan ID |
+|--------|---------|
+| **USDC** | `111171385715053379363820285370903002263619322296632596378198131296828952605172` |
+| **USD** | `102919685043168294132453698233734953851667883240916619184380623423310109370628` |
+
+---
+
+## Manual Quick Start — 3 Steps
+
+### 1 — Install the SDK
 
 ```bash
-NVM_API_KEY=sandbox:your-api-key       # From https://nevermined.app > API Keys
-NVM_ENVIRONMENT=sandbox                # sandbox, staging_sandbox, or live
-NVM_PLAN_ID=your-plan-id              # Create in Nevermined App > My Pricing Plans
-OPENAI_API_KEY=sk-your-key            # For LLM-powered agents
+# TypeScript
+npm install @nevermined-io/payments
+
+# Python
+pip install payments-py python-dotenv httpx
 ```
 
-### Shared DB Service (`src/`)
-
-Supabase/PostgreSQL pooling is now provided by a root TypeScript service.
+### 2 — Set Environment Variables
 
 ```bash
-cp .env.example .env
-npm install
-npm run dev                 # starts DB service (health endpoints below)
-npm run build && npm start  # production build + run
+NVM_BUYER_API_KEY=sandbox:your-key
+NVM_PLAN_ID=<plan-id-from-table-above>
+NVM_ENVIRONMENT=sandbox   # or: production
+SERVER_URL=https://trust-net-mcp.rikenshah-02.workers.dev  # optional override
 ```
 
-Health endpoints:
-- `GET /health/live`
-- `GET /health/ready`
-- `GET /intel/agent/:agentId`
-- `GET /intel/search?q=...`
-- `GET /intel/trending`
-- `GET /intel/avoid`
-- `GET /intel/compare?ids=id1,id2[,id3]`
+### 3 — Call the Tools
 
-Integration tests against a real Supabase/PostgreSQL instance:
+**TypeScript**
 
-```bash
-npm run test:integration
+```typescript
+import { Payments, type EnvironmentName } from '@nevermined-io/payments'
+
+const payments = Payments.getInstance({
+  nvmApiKey: process.env.NVM_BUYER_API_KEY!,
+  environment: (process.env.NVM_ENVIRONMENT || 'sandbox') as EnvironmentName,
+})
+
+const PLAN_ID    = process.env.NVM_PLAN_ID!
+const SERVER_URL = process.env.SERVER_URL || 'https://trust-net-mcp.rikenshah-02.workers.dev'
+
+async function callTool(toolName: string, args: Record<string, any> = {}) {
+  // Fresh token required per call
+  const { accessToken } = await payments.x402.getX402AccessToken(PLAN_ID)
+  const res = await fetch(`${SERVER_URL}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({
+      jsonrpc: '2.0', method: 'tools/call',
+      params: { name: toolName, arguments: args },
+      id: 1,
+    }),
+  })
+  return res.json()
+}
+
+// Tool 1 — List all agents
+const listResult = await callTool('list_agents')
+const agents = JSON.parse(listResult.result?.content?.[0]?.text || '{}').items || []
+console.log('Agents (sorted by trust score):')
+agents
+  .sort((a: any, b: any) => b.trust_score - a.trust_score)
+  .forEach((a: any) => console.log(`  ${a.verified ? '✅' : '  '} ${a.name} — score: ${a.trust_score}`))
+
+const agentId = agents[0]?.agent_id
+
+// Tool 2 — Get reviews for the top agent
+const reviewsResult = await callTool('get_reviews', { agent_id: agentId })
+console.log('\nReviews:', reviewsResult.result?.content?.[0]?.text)
+
+// Tool 3 — Submit a review (requires real on-chain tx)
+const submitResult = await callTool('submit_review', {
+  agent_id: agentId,
+  reviewer_address: '0xYourWalletAddress',
+  verification_tx: '0xYourRealOnChainTxHash',
+  score: 9,
+  comment: 'Reliable and fast.',
+})
+console.log('\nSubmit result:', submitResult.result ?? submitResult.error)
 ```
 
-### Marketplace Ingestion Worker
+**Python**
 
-The repo includes a dedicated marketplace ingestion worker that polls Nevermined marketplace sellers, enriches plan metadata, and upserts into `agents`, `plans`, `agent_services`, plus `blockchain_sync` checkpoints.
+```python
+import os, httpx, json
+from payments_py import Payments
 
-```bash
-cp .env.example .env
-npm install
-npm run ingest:once     # single ingestion cycle
-npm run ingest:worker   # interval worker loop
+payments = Payments(
+    nvm_api_key=os.environ['NVM_BUYER_API_KEY'],
+    environment=os.environ.get('NVM_ENVIRONMENT', 'sandbox'),
+)
+
+PLAN_ID    = os.environ['NVM_PLAN_ID']
+SERVER_URL = os.environ.get('SERVER_URL', 'https://trust-net-mcp.rikenshah-02.workers.dev')
+
+def call_tool(name: str, args: dict = {}) -> dict:
+    # Fresh token required per call
+    token = payments.x402.get_x402_access_token(PLAN_ID)['accessToken']
+    resp = httpx.post(
+        f'{SERVER_URL}/mcp',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'jsonrpc': '2.0', 'method': 'tools/call',
+              'params': {'name': name, 'arguments': args}, 'id': 1},
+    )
+    return resp.json()
+
+# Tool 1 — List all agents
+list_result = call_tool('list_agents')
+agents = json.loads(list_result['result']['content'][0]['text']).get('items', [])
+print('Agents (sorted by trust score):')
+for a in sorted(agents, key=lambda x: x['trust_score'], reverse=True):
+    verified = '✅' if a.get('verified') else '  '
+    print(f"  {verified} {a['name']} — score: {a['trust_score']}")
+
+agent_id = agents[0]['agent_id'] if agents else None
+
+# Tool 2 — Get reviews for the top agent
+reviews_result = call_tool('get_reviews', {'agent_id': agent_id})
+print('\nReviews:', reviews_result['result']['content'][0]['text'])
+
+# Tool 3 — Submit a review (requires real on-chain tx)
+submit_result = call_tool('submit_review', {
+    'agent_id': agent_id,
+    'reviewer_address': '0xYourWalletAddress',
+    'verification_tx': '0xYourRealOnChainTxHash',
+    'score': 9,
+    'comment': 'Reliable and fast.',
+})
+print('\nSubmit result:', submit_result.get('result') or submit_result.get('error'))
 ```
 
-Key env vars:
-- `MARKETPLACE_API_URL` (default: `https://nevermined.ai/hackathon/register/api/marketplace?side=all`)
-- `INGEST_INTERVAL_SECONDS` (default: `300`)
-- `INGEST_HTTP_TIMEOUT_MS` (default: `15000`)
-- `INGEST_RETRY_COUNT` (default: `2`)
-- `INGEST_PLAN_ENRICH_CONCURRENCY` (default: `5`)
-- `NVM_API_KEY` and `NVM_ENVIRONMENT` (required for plan enrichment)
-
-### Buyer-Agent Verification Job
-
-The repo includes a root one-shot buyer verifier that purchases from unverified sellers and marks agents as verified when at least one purchased service passes LLM scoring.
-
-```bash
-npm run buyer-agent:run
-```
-
-Run against one specific seller from `agents`:
-
-```bash
-npm run buyer-agent:run:one -- "<seller-id-or-marketplace-id-or-nvm-agent-id-or-exact-name>"
-```
-
-Key env vars:
-- `NVM_API_KEY` and `NVM_ENVIRONMENT` (subscriber credentials + environment)
-- `OPENAI_API_KEY` (required for LLM scoring)
-- `BUYER_AGENT_MODEL` (default: `gpt-4o-mini`)
-- `BUYER_AGENT_TIMEOUT_MS` (default: `15000`)
-- `BUYER_AGENT_PASS_SCORE` (default: `6`)
-- `BUYER_AGENT_MAX_SELLERS` (optional cap per run)
-- `BUYER_AGENT_TARGET_SELLER` (optional one-seller selector)
-- `BUYER_AGENT_INCLUDE_VERIFIED_TARGET` (default: `false`)
-
-### Intel Snapshot Pipeline
-
-The Intel API uses per-minute agent stats snapshots to compute accurate 30-minute window metrics for trending and failure alerts.
-
-```bash
-npm run intel:snapshot:once
-npm run intel:snapshot:worker
-```
-
-Key env vars:
-- `INTEL_SNAPSHOT_INTERVAL_SECONDS` (default: `60`)
-- `INTEL_WINDOW_MINUTES` (default: `30`)
-- `INTEL_SEARCH_RESULT_LIMIT` (default: `50`)
-- `INTEL_AVOID_FAILURE_THRESHOLD` (default: `3`)
-
-## Agents
-
-| Agent | Description | Protocols | Link |
-|-------|-------------|-----------|------|
-| **Buyer Agent** | Discovers sellers, purchases data, tracks spending | x402, A2A | [README](./agents/buyer-simple-agent/) |
-| **Seller Agent** | Sells data/services with tiered pricing | x402, A2A | [README](./agents/seller-simple-agent/) |
-| **MCP Server** | Payment-protected tools via MCP protocol | MCP, x402 | [README](./agents/mcp-server-agent/) |
-| **Strands Agent** | Strands SDK agent with payment-protected tools | x402 | [README](./agents/strands-simple-agent/) |
-
-### Buyer Agent (`agents/buyer-simple-agent/`)
-
-Discovers sellers in an A2A marketplace, purchases data autonomously, and tracks spending with budget limits. Includes a React web frontend for interactive use.
-
-```bash
-cd agents/buyer-simple-agent
-poetry install
-poetry run python -m src.agent          # Interactive CLI (A2A mode)
-poetry run python -m src.web            # Web server + React frontend
-```
-
-### Seller Agent (`agents/seller-simple-agent/`)
-
-Sells data and services with tiered pricing (1, 5, 10 credits). Supports both HTTP (x402 middleware) and A2A modes with auto-registration to buyer marketplaces.
-
-```bash
-cd agents/seller-simple-agent
-poetry install
-poetry run python -m src.agent          # HTTP server (x402)
-poetry run python -m src.agent_a2a      # A2A server
-```
-
-### MCP Server Agent (`agents/mcp-server-agent/`)
-
-MCP server with payment-protected tools (search, summarize, research). Includes a setup script that programmatically registers the agent and creates a payment plan.
-
-```bash
-cd agents/mcp-server-agent
-poetry install
-poetry run python -m src.setup          # Register agent + create plan
-poetry run python -m src.server         # Start MCP server (port 3000)
-```
-
-### Strands Agent (`agents/strands-simple-agent/`)
-
-Strands SDK agent with x402 payment-protected tools and full payment discovery flow. Demonstrates the `@requires_payment` decorator pattern.
-
-```bash
-cd agents/strands-simple-agent
-poetry install
-poetry run python agent.py              # Run agent
-poetry run python demo.py               # Run demo
-```
-
-## Protocols
-
-### x402 (HTTP Payment Protocol)
-
-Payment negotiation via HTTP headers. The client sends a `payment-signature` header with an access token. If missing, the server returns `402 Payment Required` with a `payment-required` header describing what's needed.
-
-### A2A (Agent-to-Agent)
-
-Standard agent discovery via `/.well-known/agent.json` and JSON-RPC messaging with payment extensions. Agents can auto-register with buyer marketplaces.
-
-### MCP (Model Context Protocol)
-
-Tool/plugin monetization with logical URLs (e.g., `mcp://server/tools/search`). Each tool can have independent credit pricing.
-
-## Documentation
-
-- [Getting Started](./docs/getting-started.md) — Environment setup and first agent
-- [AWS Integration](./docs/aws-integration.md) — Strands SDK + AgentCore deployment
-- [Deploy to AgentCore](./docs/deploy-to-agentcore.md) — Step-by-step AgentCore deployment with Nevermined payments
+---
 
 ## Resources
 
-- [Nevermined Documentation](https://nevermined.ai/docs)
-- [Nevermined App](https://nevermined.app)
-- [Payments Python SDK](https://github.com/nevermined-io/payments-py)
-- [Payments TypeScript SDK](https://github.com/nevermined-io/payments)
-- [x402 Protocol Spec](https://github.com/coinbase/x402)
-- [AWS AgentCore Samples](https://github.com/awslabs/amazon-bedrock-agentcore-samples)
-- [Discord Community](https://discord.com/invite/GZju2qScKq)
-
-## License
-
-MIT
+| | |
+|---|---|
+| **Docs & SDK** | [docs.nevermined.app](https://docs.nevermined.app) |
+| **Server endpoint** | `trust-net-mcp.rikenshah-02.workers.dev/mcp` |
+| **Environment** | `sandbox` \| `production` |
