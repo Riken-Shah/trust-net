@@ -12,7 +12,7 @@ import {
   matchServiceToOffer,
   normalizeServiceName,
 } from './offers.js'
-import { selectCheapestPlan } from './plans.js'
+import { selectAllViablePlans, selectCheapestPlan } from './plans.js'
 import { detectSellerProtocol } from './protocol.js'
 import {
   completeRun,
@@ -264,7 +264,8 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
         continue
       }
 
-      const selectedPlan = selectCheapestPlan(seller.plans, !!cardDelegation)
+      const viablePlans = selectAllViablePlans(seller.plans, !!cardDelegation)
+      const selectedPlan = viablePlans[0] ?? null
       if (!selectedPlan) {
         await insertSetupFailure(pool, {
           runId: run.id,
@@ -274,6 +275,10 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
           planId: null,
         })
         continue
+      }
+
+      if (viablePlans.length > 1) {
+        console.log(`  plans: ${viablePlans.map((p) => p.nvmPlanId.slice(0, 12) + '…').join(', ')}`)
       }
 
       const detection = await detectSellerProtocol(endpoint.normalizedUrl, config.timeoutMs)
@@ -348,20 +353,46 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
         summary.servicesAttempted += 1
         console.log(`  service: ${service.displayName} (via ${detection.protocol})`)
 
-        const purchase = await purchaseService(
-          detection.protocol,
-          payments,
-          config,
-          seller,
-          selectedPlan.nvmPlanId,
-          endpoint.normalizedUrl,
-          detection.details,
-          service,
-          discoveredOffers,
-          cardDelegation,
-        )
+        // Try each viable plan until one succeeds
+        let purchase: PurchaseResult | null = null
+        let usedPlanId = selectedPlan.nvmPlanId
 
-        if (purchase.purchaseSuccess) {
+        for (const plan of viablePlans) {
+          const attempt = await purchaseService(
+            detection.protocol,
+            payments,
+            config,
+            seller,
+            plan.nvmPlanId,
+            endpoint.normalizedUrl,
+            detection.details,
+            service,
+            discoveredOffers,
+            cardDelegation,
+          )
+
+          if (attempt.purchaseSuccess) {
+            purchase = attempt
+            usedPlanId = plan.nvmPlanId
+            break
+          }
+
+          // If purchase failed and there are more plans to try, log and continue
+          if (viablePlans.indexOf(plan) < viablePlans.length - 1) {
+            console.log(`    plan ${plan.nvmPlanId.slice(0, 12)}… failed (${attempt.error}), trying next…`)
+            purchase = attempt
+            usedPlanId = plan.nvmPlanId
+          } else {
+            // Last plan also failed — use this as the final result
+            purchase = attempt
+            usedPlanId = plan.nvmPlanId
+          }
+        }
+
+        // purchase is guaranteed non-null since viablePlans is non-empty
+        const finalPurchase = purchase!
+
+        if (finalPurchase.purchaseSuccess) {
           summary.servicesSucceeded += 1
         } else {
           summary.servicesFailed += 1
@@ -371,14 +402,14 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
           service,
           protocol: detection.protocol,
           seller,
-          purchase,
+          purchase: finalPurchase,
         })
 
         const passed =
-          purchase.purchaseSuccess &&
+          finalPurchase.purchaseSuccess &&
           (judgment.verdict === 'pass' || judgment.overallScore >= config.passScore)
 
-        console.log(`    purchase: ${purchase.purchaseSuccess ? 'OK' : `FAIL (${purchase.error})`}, score: ${judgment.overallScore}, verdict: ${judgment.verdict}, passed: ${passed}`)
+        console.log(`    purchase: ${finalPurchase.purchaseSuccess ? 'OK' : `FAIL (${finalPurchase.error})`}, score: ${judgment.overallScore}, verdict: ${judgment.verdict}, passed: ${passed}`)
 
         if (passed) {
           sellerHasPassingService = true
@@ -389,8 +420,8 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
           seller,
           service,
           protocol: detection.protocol,
-          planId: selectedPlan.nvmPlanId,
-          purchase,
+          planId: usedPlanId,
+          purchase: finalPurchase,
           judgment,
           passed,
         })

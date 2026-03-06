@@ -125,8 +125,7 @@ export async function fetchSellerCandidates(
         endpoint_url,
         services_sold
       FROM agents
-      WHERE is_active = TRUE
-        AND endpoint_url IS NOT NULL
+      WHERE endpoint_url IS NOT NULL
         AND btrim(endpoint_url) <> ''
         AND (
           is_verified = FALSE
@@ -163,9 +162,7 @@ export async function fetchSellerCandidates(
         plans.price_amount
       FROM agent_services AS services
       JOIN plans ON plans.nvm_plan_id = services.nvm_plan_id
-      WHERE services.is_active = TRUE
-        AND plans.is_active = TRUE
-        AND services.agent_id = ANY($1::uuid[])
+      WHERE services.agent_id = ANY($1::uuid[])
       ORDER BY services.agent_id ASC, services.nvm_plan_id ASC
     `,
     [agentIds],

@@ -46,6 +46,35 @@ function getTextExcerpt(payload: unknown): string | null {
   return JSON.stringify(payload).slice(0, 500)
 }
 
+function buildPayloadFromSimpleError(errorBody: string, serviceName: string, paidUrl: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(errorBody)
+    const errorMsg = typeof parsed?.error === 'string' ? parsed.error : typeof parsed?.message === 'string' ? parsed.message : null
+    if (!errorMsg) {
+      return null
+    }
+
+    // Match patterns like "field_name is required" or "missing field_name"
+    const requiredMatch = errorMsg.match(/^(\w+)\s+is\s+required$/i)
+      ?? errorMsg.match(/^missing\s+(?:required\s+)?(?:field:?\s+)?(\w+)$/i)
+    if (!requiredMatch) {
+      return null
+    }
+
+    const field = requiredMatch[1]
+    const defaults: Record<string, string> = {
+      endpoint_url: paidUrl,
+      url: paidUrl,
+      query: `Please provide the '${serviceName}' service output.`,
+      service: serviceName,
+      agent_url: paidUrl,
+    }
+    return { [field]: defaults[field] ?? serviceName }
+  } catch {
+    return null
+  }
+}
+
 function buildPayloadFromValidationError(errorBody: string, serviceName: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(errorBody)
@@ -285,6 +314,32 @@ export async function purchaseViaX402(input: X402PurchaseInput): Promise<Purchas
     if (response.status === 422) {
       const errorText = await response.text()
       const altPayload = buildPayloadFromValidationError(errorText, input.serviceName)
+      if (altPayload) {
+        response = await fetchWithTimeout(
+          paidUrl,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'payment-signature': accessToken,
+            },
+            body: JSON.stringify(altPayload),
+          },
+          input.timeoutMs,
+        )
+      } else {
+        response = new Response(errorText, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        })
+      }
+    }
+
+    // If POST 400 with a simple "X is required" error, retry with the required field
+    if (response.status === 400) {
+      const errorText = await response.text()
+      const altPayload = buildPayloadFromSimpleError(errorText, input.serviceName, paidUrl)
       if (altPayload) {
         response = await fetchWithTimeout(
           paidUrl,

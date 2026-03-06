@@ -76,3 +76,36 @@ export function selectCheapestPlan(plans: SellerPlan[], hasCardDelegation = fals
 
   return ranked[0]?.plan ?? null
 }
+
+export function selectAllViablePlans(plans: SellerPlan[], hasCardDelegation = false): SellerPlan[] {
+  const candidates = hasCardDelegation ? plans : plans.filter(isCryptoOrderable)
+  if (candidates.length === 0) {
+    return []
+  }
+
+  const ranked = candidates.map((plan) => ({
+    plan,
+    comparableUsdPrice: comparableUsdPrice(plan),
+  }))
+
+  ranked.sort((left, right) => {
+    if (left.comparableUsdPrice !== null && right.comparableUsdPrice !== null) {
+      if (left.comparableUsdPrice !== right.comparableUsdPrice) {
+        return left.comparableUsdPrice - right.comparableUsdPrice
+      }
+      return left.plan.nvmPlanId.localeCompare(right.plan.nvmPlanId)
+    }
+
+    if (left.comparableUsdPrice !== null) {
+      return -1
+    }
+
+    if (right.comparableUsdPrice !== null) {
+      return 1
+    }
+
+    return left.plan.nvmPlanId.localeCompare(right.plan.nvmPlanId)
+  })
+
+  return ranked.map((r) => r.plan)
+}
