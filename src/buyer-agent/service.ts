@@ -409,7 +409,9 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
           finalPurchase.purchaseSuccess &&
           (judgment.verdict === 'pass' || judgment.overallScore >= config.passScore)
 
-        console.log(`    purchase: ${finalPurchase.purchaseSuccess ? 'OK' : `FAIL (${finalPurchase.error})`}, score: ${judgment.overallScore}, verdict: ${judgment.verdict}, passed: ${passed}`)
+        const txInfo = finalPurchase.txHash ? `, tx: ${finalPurchase.txHash}` : ''
+        const creditsInfo = finalPurchase.creditsRedeemed ? `, credits: ${finalPurchase.creditsRedeemed}` : ''
+        console.log(`    purchase: ${finalPurchase.purchaseSuccess ? 'OK' : `FAIL (${finalPurchase.error})`}, score: ${judgment.overallScore}, verdict: ${judgment.verdict}, passed: ${passed}${txInfo}${creditsInfo}`)
 
         if (passed) {
           sellerHasPassingService = true

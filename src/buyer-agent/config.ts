@@ -79,7 +79,7 @@ export function loadBuyerAgentConfig(
   env: NodeJS.ProcessEnv = process.env,
   overrides: BuyerAgentConfigOverrides = {},
 ): BuyerAgentConfig {
-  const nvmApiKey = getTrimmedEnv('NVM_BUYER_API_KEY', env) || getTrimmedEnv('NVM_API_KEY', env)
+  const nvmApiKey = getTrimmedEnv('NVM_API_KEY', env) || getTrimmedEnv('NVM_BUYER_API_KEY', env)
   if (!nvmApiKey) {
     throw new Error('NVM_BUYER_API_KEY (or NVM_API_KEY) is required.')
   }
