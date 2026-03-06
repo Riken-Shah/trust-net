@@ -415,14 +415,39 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 				     WHEN agents.is_verified=TRUE AND agents.endpoint_url IS DISTINCT FROM EXCLUDED.endpoint_url THEN FALSE
 				     ELSE agents.is_verified
 				   END
+				 WHERE
+				   agents.team_id IS DISTINCT FROM EXCLUDED.team_id
+				   OR agents.nvm_agent_id IS DISTINCT FROM EXCLUDED.nvm_agent_id
+				   OR agents.wallet_address IS DISTINCT FROM EXCLUDED.wallet_address
+				   OR agents.team_name IS DISTINCT FROM EXCLUDED.team_name
+				   OR agents.name IS DISTINCT FROM EXCLUDED.name
+				   OR agents.description IS DISTINCT FROM EXCLUDED.description
+				   OR agents.category IS DISTINCT FROM EXCLUDED.category
+				   OR agents.keywords IS DISTINCT FROM EXCLUDED.keywords
+				   OR agents.marketplace_ready IS DISTINCT FROM EXCLUDED.marketplace_ready
+				   OR agents.endpoint_url IS DISTINCT FROM EXCLUDED.endpoint_url
+				   OR agents.services_sold IS DISTINCT FROM EXCLUDED.services_sold
+				   OR agents.services_provided_per_req IS DISTINCT FROM EXCLUDED.services_provided_per_req
+				   OR agents.price_per_request_display IS DISTINCT FROM EXCLUDED.price_per_request_display
+				   OR agents.price_metering_unit IS DISTINCT FROM EXCLUDED.price_metering_unit
+				   OR agents.price_display IS DISTINCT FROM EXCLUDED.price_display
+				   OR agents.api_created_at IS DISTINCT FROM EXCLUDED.api_created_at
+				   OR agents.api_updated_at IS DISTINCT FROM EXCLUDED.api_updated_at
+				   OR agents.is_active IS DISTINCT FROM TRUE
 				 RETURNING id, marketplace_id`,
 				[seller.marketplaceId, seller.teamId, seller.nvmAgentId, seller.walletAddress, seller.teamName, seller.name,
 				 seller.description, seller.category, seller.keywords, seller.marketplaceReady, seller.endpointUrl, seller.servicesSold,
 				 seller.servicesProvidedPerRequest, seller.pricePerRequestDisplay, seller.priceMeteringUnit, seller.priceDisplay,
 				 seller.apiCreatedAt, seller.apiUpdatedAt],
 			);
-			if (rows[0]) {
-				agentIdByMid.set(rows[0].marketplace_id, rows[0].id);
+			const row = rows[0] ?? (
+				await tx.unsafe<{ id: string; marketplace_id: string }[]>(
+					`SELECT id, marketplace_id FROM agents WHERE marketplace_id=$1 LIMIT 1`,
+					[seller.marketplaceId],
+				)
+			)[0];
+			if (row) {
+				agentIdByMid.set(row.marketplace_id, row.id);
 				agentsUpserted++;
 			}
 		}

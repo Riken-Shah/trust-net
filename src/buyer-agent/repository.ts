@@ -1,4 +1,4 @@
-import { type Pool } from 'pg'
+import { type Pool, type PoolClient } from 'pg'
 
 import {
   type BuyerAgentConfig,
@@ -27,11 +27,71 @@ interface SellerPlanRow {
   price_amount: string | null
 }
 
+interface PgLikeError extends Error {
+  code?: string
+}
+
+const RETRYABLE_WRITE_ERROR_CODES = new Set(['55P03', '57014', '40001', '40P01'])
+const MAX_WRITE_ATTEMPTS = 3
+const WRITE_LOCK_TIMEOUT_MS = 2_000
+const WRITE_STATEMENT_TIMEOUT_MS = 10_000
+
 function asJson(value: unknown): string | null {
   if (value === null || value === undefined) {
     return null
   }
   return JSON.stringify(value)
+}
+
+function isRetryableWriteError(error: unknown): error is PgLikeError {
+  return error instanceof Error
+    && typeof (error as PgLikeError).code === 'string'
+    && RETRYABLE_WRITE_ERROR_CODES.has((error as PgLikeError).code as string)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function withWriteRetry<T>(
+  pool: Pool,
+  operationName: string,
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  for (let attempt = 1; attempt <= MAX_WRITE_ATTEMPTS; attempt += 1) {
+    const client = await pool.connect()
+
+    try {
+      await client.query('BEGIN')
+      await client.query(`SET LOCAL lock_timeout = '${WRITE_LOCK_TIMEOUT_MS}ms'`)
+      await client.query(`SET LOCAL statement_timeout = '${WRITE_STATEMENT_TIMEOUT_MS}ms'`)
+      const result = await operation(client)
+      await client.query('COMMIT')
+      return result
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK')
+      } catch {
+        // Best effort rollback before the client is released.
+      }
+
+      if (!isRetryableWriteError(error) || attempt === MAX_WRITE_ATTEMPTS) {
+        throw error
+      }
+
+      const retryDelayMs = attempt * 250
+      console.warn(
+        `${operationName} retrying after transient DB error ${(error as PgLikeError).code} (attempt ${attempt}/${MAX_WRITE_ATTEMPTS})`,
+      )
+      await sleep(retryDelayMs)
+    } finally {
+      client.release()
+    }
+  }
+
+  throw new Error(`${operationName} failed after exhausting retries.`)
 }
 
 export interface SellerSelectionOptions {
@@ -204,128 +264,134 @@ export async function failRun(pool: Pool, runId: string, errorMessage: string): 
 }
 
 export async function insertJudgment(pool: Pool, input: JudgmentInsertInput): Promise<void> {
-  await pool.query(
-    `
-      INSERT INTO buyer_agent_judgments (
-        run_id,
-        agent_id,
-        marketplace_id,
-        seller_name,
-        service_name,
-        service_name_normalized,
-        protocol,
-        plan_id,
-        endpoint_url,
-        request_payload,
-        response_payload,
-        response_excerpt,
-        purchase_success,
-        purchase_error,
-        http_status,
-        latency_ms,
-        tx_hash,
-        credits_redeemed,
-        remaining_balance,
-        payment_meta,
-        overall_score,
-        score_accuracy,
-        score_speed,
-        score_value,
-        score_reliability,
-        verdict,
-        rationale,
-        passed
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7,
-        $8, $9, $10::jsonb, $11::jsonb, $12,
-        $13, $14, $15, $16, $17,
-        $18, $19, $20::jsonb,
-        $21, $22, $23, $24, $25,
-        $26, $27, $28
-      )
-    `,
-    [
-      input.runId,
-      input.seller.agentId,
-      input.seller.marketplaceId,
-      input.seller.name,
-      input.service.displayName,
-      input.service.normalized,
-      input.protocol,
-      input.planId,
-      input.seller.endpointUrl,
-      asJson(input.purchase.requestPayload),
-      asJson(input.purchase.responsePayload),
-      input.purchase.responseExcerpt,
-      input.purchase.purchaseSuccess,
-      input.purchase.error,
-      input.purchase.httpStatus,
-      input.purchase.latencyMs,
-      input.purchase.txHash,
-      input.purchase.creditsRedeemed,
-      input.purchase.remainingBalance,
-      asJson(input.purchase.paymentMeta),
-      input.judgment.overallScore,
-      input.judgment.scoreAccuracy,
-      input.judgment.scoreSpeed,
-      input.judgment.scoreValue,
-      input.judgment.scoreReliability,
-      input.judgment.verdict,
-      input.judgment.rationale,
-      input.passed,
-    ],
-  )
+  await withWriteRetry(pool, 'insertJudgment', async (client) => {
+    await client.query(
+      `
+        INSERT INTO buyer_agent_judgments (
+          run_id,
+          agent_id,
+          marketplace_id,
+          seller_name,
+          service_name,
+          service_name_normalized,
+          protocol,
+          plan_id,
+          endpoint_url,
+          request_payload,
+          response_payload,
+          response_excerpt,
+          purchase_success,
+          purchase_error,
+          http_status,
+          latency_ms,
+          tx_hash,
+          credits_redeemed,
+          remaining_balance,
+          payment_meta,
+          overall_score,
+          score_accuracy,
+          score_speed,
+          score_value,
+          score_reliability,
+          verdict,
+          rationale,
+          passed
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10::jsonb, $11::jsonb, $12,
+          $13, $14, $15, $16, $17,
+          $18, $19, $20::jsonb,
+          $21, $22, $23, $24, $25,
+          $26, $27, $28
+        )
+      `,
+      [
+        input.runId,
+        input.seller.agentId,
+        input.seller.marketplaceId,
+        input.seller.name,
+        input.service.displayName,
+        input.service.normalized,
+        input.protocol,
+        input.planId,
+        input.seller.endpointUrl,
+        asJson(input.purchase.requestPayload),
+        asJson(input.purchase.responsePayload),
+        input.purchase.responseExcerpt,
+        input.purchase.purchaseSuccess,
+        input.purchase.error,
+        input.purchase.httpStatus,
+        input.purchase.latencyMs,
+        input.purchase.txHash,
+        input.purchase.creditsRedeemed,
+        input.purchase.remainingBalance,
+        asJson(input.purchase.paymentMeta),
+        input.judgment.overallScore,
+        input.judgment.scoreAccuracy,
+        input.judgment.scoreSpeed,
+        input.judgment.scoreValue,
+        input.judgment.scoreReliability,
+        input.judgment.verdict,
+        input.judgment.rationale,
+        input.passed,
+      ],
+    )
+  })
 }
 
 export async function insertSetupFailure(pool: Pool, input: SetupFailureInput): Promise<void> {
-  await pool.query(
-    `
-      INSERT INTO buyer_agent_judgments (
-        run_id,
-        agent_id,
-        marketplace_id,
-        seller_name,
-        service_name,
-        service_name_normalized,
-        protocol,
-        plan_id,
-        endpoint_url,
-        purchase_success,
-        purchase_error,
-        latency_ms,
-        passed
-      )
-      VALUES (
-        $1, $2, $3, $4,
-        '__setup__', '__setup__',
-        $5, $6, $7,
-        FALSE, $8, 0, FALSE
-      )
-    `,
-    [
-      input.runId,
-      input.seller.agentId,
-      input.seller.marketplaceId,
-      input.seller.name,
-      input.protocol,
-      input.planId,
-      input.seller.endpointUrl,
-      input.reason,
-    ],
-  )
+  await withWriteRetry(pool, 'insertSetupFailure', async (client) => {
+    await client.query(
+      `
+        INSERT INTO buyer_agent_judgments (
+          run_id,
+          agent_id,
+          marketplace_id,
+          seller_name,
+          service_name,
+          service_name_normalized,
+          protocol,
+          plan_id,
+          endpoint_url,
+          purchase_success,
+          purchase_error,
+          latency_ms,
+          passed
+        )
+        VALUES (
+          $1, $2, $3, $4,
+          '__setup__', '__setup__',
+          $5, $6, $7,
+          FALSE, $8, 0, FALSE
+        )
+      `,
+      [
+        input.runId,
+        input.seller.agentId,
+        input.seller.marketplaceId,
+        input.seller.name,
+        input.protocol,
+        input.planId,
+        input.seller.endpointUrl,
+        input.reason,
+      ],
+    )
+  })
 }
 
 export async function markSellerVerified(pool: Pool, agentId: string): Promise<boolean> {
-  const result = await pool.query(
-    `
-      UPDATE agents
-      SET is_verified = TRUE
-      WHERE id = $1
-        AND is_verified = FALSE
-    `,
-    [agentId],
-  )
+  const result = await withWriteRetry(pool, 'markSellerVerified', async (client) => {
+    return client.query(
+      `
+        UPDATE agents
+        SET is_verified = TRUE
+        WHERE id = $1
+          AND is_verified = FALSE
+      `,
+      [agentId],
+    )
+  })
 
   return (result.rowCount ?? 0) > 0
 }

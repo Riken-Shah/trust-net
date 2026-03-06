@@ -27,7 +27,7 @@ export async function ensureBuyerAgentSchema(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS buyer_agent_judgments (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       run_id UUID NOT NULL REFERENCES buyer_agent_runs(id) ON DELETE CASCADE,
-      agent_id UUID NOT NULL REFERENCES agents(id),
+      agent_id UUID NOT NULL,
       marketplace_id TEXT NOT NULL,
       seller_name TEXT NOT NULL,
       service_name TEXT NOT NULL,
@@ -63,6 +63,29 @@ export async function ensureBuyerAgentSchema(pool: Pool): Promise<void> {
       CONSTRAINT buyer_agent_judgments_value_check CHECK (score_value IS NULL OR score_value BETWEEN 1 AND 10),
       CONSTRAINT buyer_agent_judgments_reliability_check CHECK (score_reliability IS NULL OR score_reliability BETWEEN 1 AND 10)
     )
+  `)
+
+  await pool.query(`
+    DO $$
+    DECLARE
+      constraint_record RECORD;
+    BEGIN
+      FOR constraint_record IN
+        SELECT con.conname
+        FROM pg_constraint AS con
+        JOIN pg_class AS rel ON rel.oid = con.conrelid
+        JOIN pg_namespace AS ns ON ns.oid = rel.relnamespace
+        JOIN pg_attribute AS attr
+          ON attr.attrelid = rel.oid
+         AND attr.attnum = ANY(con.conkey)
+        WHERE con.contype = 'f'
+          AND ns.nspname = current_schema()
+          AND rel.relname = 'buyer_agent_judgments'
+          AND attr.attname = 'agent_id'
+      LOOP
+        EXECUTE format('ALTER TABLE buyer_agent_judgments DROP CONSTRAINT %I', constraint_record.conname);
+      END LOOP;
+    END $$;
   `)
 
   await pool.query(
