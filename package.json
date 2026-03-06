@@ -22,7 +22,8 @@
     "test:intel:integration": "node --test --import tsx src/intel/intel.integration.test.ts"
   },
   "dependencies": {
-    "@nevermined-io/payments": "^0.9.3",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@nevermined-io/payments": "^1.1.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "pg": "^8.13.1"
