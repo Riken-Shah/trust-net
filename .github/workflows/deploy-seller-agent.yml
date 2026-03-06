@@ -1,0 +1,29 @@
+name: Deploy Seller Agent
+
+on:
+  push:
+    branches: [main, feat/buyer-agent]
+    paths:
+      - "seller-agent/**"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy to Cloudflare Workers
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: seller-agent
+        run: npm ci
+
+      - name: Deploy Worker + Cron
+        working-directory: seller-agent
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
