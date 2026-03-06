@@ -38,78 +38,7 @@ const LIST_AGENTS_SQL = `
     a.endpoint_url,
     COALESCE(ts.trust_score, 0) AS trust_score,
     ts.tier,
-    COALESCE(ts.review_count, 0) AS review_count,
-    COALESCE((
-      SELECT jsonb_agg(
-        jsonb_build_object(
-          'plan_id', p.nvm_plan_id,
-          'plan_name', p.name,
-          'plan_type', p.plan_type,
-          'pricing_type', p.pricing_type,
-          'price_amount', p.price_amount,
-          'token_symbol', p.token_symbol,
-          'fiat_amount_cents', p.fiat_amount_cents,
-          'network', p.network,
-          'credits_granted', p.credits_granted,
-          'credits_per_call', p.credits_per_call,
-          'duration_seconds', p.duration_seconds,
-          'service_name', s.name,
-          'service_description', s.description
-        )
-        ORDER BY COALESCE(s.name, ''), p.nvm_plan_id
-      )
-      FROM agent_services s
-      JOIN plans p ON p.nvm_plan_id = s.nvm_plan_id
-      WHERE s.agent_id = a.id
-      AND s.is_active = TRUE
-      AND p.is_active = TRUE
-    ), '[]'::jsonb) AS offers,
-    COALESCE((
-      SELECT SUM(COALESCE(acs.total_orders, 0))
-      FROM agent_computed_stats acs
-      WHERE acs.agent_id = a.id
-      AND acs.event_type = 'order'
-    ), 0) AS total_orders,
-    COALESCE((
-      SELECT SUM(COALESCE(acs.unique_buyers, 0))
-      FROM agent_computed_stats acs
-      WHERE acs.agent_id = a.id
-      AND acs.event_type = 'order'
-    ), 0) AS unique_buyers,
-    COALESCE((
-      SELECT SUM(COALESCE(acs.total_requests, 0))
-      FROM agent_computed_stats acs
-      WHERE acs.agent_id = a.id
-      AND acs.event_type = 'burn'
-    ), 0) AS total_requests,
-    COALESCE((
-      SELECT SUM(COALESCE(acs.successful_burns, 0))
-      FROM agent_computed_stats acs
-      WHERE acs.agent_id = a.id
-      AND acs.event_type = 'burn'
-    ), 0) AS successful_burns,
-    COALESCE((
-      SELECT SUM(COALESCE(acs.failed_burns, 0))
-      FROM agent_computed_stats acs
-      WHERE acs.agent_id = a.id
-      AND acs.event_type = 'burn'
-    ), 0) AS failed_burns,
-    COALESCE((
-      SELECT SUM(COALESCE(acs.total_credits_burned, 0))
-      FROM agent_computed_stats acs
-      WHERE acs.agent_id = a.id
-      AND acs.event_type = 'burn'
-    ), 0) AS total_credits_burned,
-    COALESCE((
-      SELECT AVG(r.score)::numeric
-      FROM reviews r
-      WHERE r.agent_id = a.id
-    ), 0) AS average_review_score,
-    (
-      SELECT MAX(acs.last_event_at)
-      FROM agent_computed_stats acs
-      WHERE acs.agent_id = a.id
-    ) AS last_activity_at
+    COALESCE(ts.review_count, 0) AS review_count
   FROM agents a
   LEFT JOIN trust_scores ts ON ts.agent_id = a.id
   WHERE a.is_active = TRUE
@@ -258,7 +187,7 @@ app.post('/mcp', async (request: Request, response: Response) => {
       tools: [
         {
           name: 'list_agents',
-          description: 'List all agents with trust, plan, service, and computed stats data.',
+          description: 'List active hackathon agents with summary metadata and trust score.',
           inputSchema: {
             type: 'object',
             properties: {},
