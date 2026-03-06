@@ -34,39 +34,40 @@ Both filters come directly from the marketplace API response — no extra Neverm
 ## 1. Agents
 
 ```sql
-CREATE TABLE agents (
-  id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+create table public.agents (
+  id uuid not null default gen_random_uuid (),
+  marketplace_id text not null,
+  team_id text not null,
+  nvm_agent_id text null,
+  wallet_address text not null,
+  team_name text null,
+  name text not null,
+  description text null,
+  category text null,
+  keywords text[] null,
+  marketplace_ready boolean null default false,
+  endpoint_url text null,
+  services_sold text null,
+  services_provided_per_req text null,
+  price_per_request_display text null,
+  price_metering_unit text null,
+  price_display numeric null,
+  api_created_at timestamp with time zone null,
+  api_updated_at timestamp with time zone null,
+  first_seen_at timestamp with time zone null default now(),
+  last_synced_at timestamp with time zone null,
+  is_active boolean null default true,
+  is_verified boolean not null default false,
+  constraint agents_pkey primary key (id),
+  constraint agents_marketplace_id_key unique (marketplace_id),
+  constraint agents_nvm_agent_id_key unique (nvm_agent_id)
+) TABLESPACE pg_default;
 
-  -- From marketplace API  (exact field names from sellers[])
-  marketplace_id            TEXT UNIQUE NOT NULL,   -- sellers[].id
-  team_id                   TEXT NOT NULL,           -- sellers[].teamId
-  nvm_agent_id              TEXT UNIQUE,             -- sellers[].nvmAgentId  (large numeric string)
-  wallet_address            TEXT NOT NULL,           -- sellers[].walletAddress
-  -- ↑ used as the filter address when polling 'order' events on-chain
+create index IF not exists idx_agents_wallet_address on public.agents using btree (wallet_address) TABLESPACE pg_default;
 
-  team_name                 TEXT,                    -- sellers[].teamName
-  name                      TEXT NOT NULL,           -- sellers[].name
-  description               TEXT,                    -- sellers[].description
-  category                  TEXT,                    -- sellers[].category
-  keywords                  TEXT[],                  -- sellers[].keywords[]
-  marketplace_ready         BOOLEAN DEFAULT FALSE,   -- sellers[].marketplaceReady
-  endpoint_url              TEXT,                    -- sellers[].endpointUrl
-
-  services_sold             TEXT,                    -- sellers[].servicesSold
-  services_provided_per_req TEXT,                    -- sellers[].servicesProvidedPerRequest
-
-  -- Pricing display (raw strings — structured data lives in plans)
-  price_per_request_display TEXT,                    -- sellers[].pricePerRequest  e.g. "$0.03 (Card), 0.03 USDC"
-  price_metering_unit       TEXT,                    -- sellers[].priceMeteringUnit
-  price_display             NUMERIC,                 -- sellers[].price
-
-  api_created_at            TIMESTAMPTZ,             -- sellers[].createdAt
-  api_updated_at            TIMESTAMPTZ,             -- sellers[].updatedAt
-
-  first_seen_at             TIMESTAMPTZ DEFAULT NOW(),
-  last_synced_at            TIMESTAMPTZ,
-  is_active                 BOOLEAN DEFAULT TRUE
-);
+create trigger trg_init_blockchain_sync_from_agent
+after INSERT on agents for EACH row
+execute FUNCTION init_blockchain_sync_from_agent ();
 ```
 
 ---

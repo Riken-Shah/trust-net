@@ -75,6 +75,30 @@ Key env vars:
 - `INGEST_PLAN_ENRICH_CONCURRENCY` (default: `5`)
 - `NVM_API_KEY` and `NVM_ENVIRONMENT` (required for plan enrichment)
 
+### Buyer-Agent Verification Job
+
+The repo includes a root one-shot buyer verifier that purchases from unverified sellers and marks agents as verified when at least one purchased service passes LLM scoring.
+
+```bash
+npm run buyer-agent:run
+```
+
+Run against one specific seller from `agents`:
+
+```bash
+npm run buyer-agent:run:one -- "<seller-id-or-marketplace-id-or-nvm-agent-id-or-exact-name>"
+```
+
+Key env vars:
+- `NVM_API_KEY` and `NVM_ENVIRONMENT` (subscriber credentials + environment)
+- `OPENAI_API_KEY` (required for LLM scoring)
+- `BUYER_AGENT_MODEL` (default: `gpt-4o-mini`)
+- `BUYER_AGENT_TIMEOUT_MS` (default: `15000`)
+- `BUYER_AGENT_PASS_SCORE` (default: `6`)
+- `BUYER_AGENT_MAX_SELLERS` (optional cap per run)
+- `BUYER_AGENT_TARGET_SELLER` (optional one-seller selector)
+- `BUYER_AGENT_INCLUDE_VERIFIED_TARGET` (default: `false`)
+
 ### Intel Snapshot Pipeline
 
 The Intel API uses per-minute agent stats snapshots to compute accurate 30-minute window metrics for trending and failure alerts.

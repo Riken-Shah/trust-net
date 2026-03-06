@@ -6,6 +6,10 @@
   "description": "Shared Supabase/PostgreSQL connection pool service for trust-net",
   "scripts": {
     "dev": "tsx src/server.ts",
+    "buyer-agent:run": "tsx src/buyer-agent/runOnce.ts",
+    "buyer-agent:verify": "BUYER_AGENT_PASS_SCORE=1 tsx src/buyer-agent/runOnce.ts",
+    "buyer-agent:verify:one": "BUYER_AGENT_PASS_SCORE=1 bash scripts/test-buyer-agent-one-seller.sh",
+    "buyer-agent:run:one": "bash scripts/test-buyer-agent-one-seller.sh",
     "ingest": "tsx src/ingestion/run.ts",
     "ingest:reset": "tsx src/ingestion/reset.ts",
     "ingest:once": "tsx src/ingestion/runOnce.ts",
@@ -17,7 +21,7 @@
     "start": "node dist/server.js",
     "check": "tsc --noEmit",
     "test:integration": "node --test --import tsx src/db/pool.integration.test.ts",
-    "test:unit": "node --test --import tsx \"src/ingestion/__tests__/*.test.ts\" \"src/intel/__tests__/*.test.ts\"",
+    "test:unit": "node --test --import tsx \"src/ingestion/__tests__/*.test.ts\" \"src/intel/__tests__/*.test.ts\" \"src/buyer-agent/__tests__/*.test.ts\"",
     "test:ingestion:integration": "node --test --import tsx src/ingestion/ingestion.integration.test.ts",
     "test:intel:integration": "node --test --import tsx src/intel/intel.integration.test.ts"
   },
