@@ -10,6 +10,7 @@
     "ingest:worker": "tsx src/ingestion/worker.ts",
     "intel:snapshot:once": "tsx src/intel/snapshotOnce.ts",
     "intel:snapshot:worker": "tsx src/intel/snapshotWorker.ts",
+    "intel:test:endpoints": "bash scripts/test-intel-endpoints.sh",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "check": "tsc --noEmit",
