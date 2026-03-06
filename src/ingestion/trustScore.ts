@@ -11,8 +11,13 @@
  *   score_reviews      × 0.20   ← avg(score) / 10
  *   score_volume       × 0.20   ← log10(total_requests + 1) normalised
  *
- * Example: no burn data + no reviews → only repeat_usage is available,
- * so it gets weight 1.0 and an agent with 100% repeat buyers scores 100.
+ * Volume falls back to order count when burn data is unavailable.
+ *
+ * Data coverage factor: the raw score is multiplied by a confidence
+ * factor based on how many independent data sources (burns, orders,
+ * reviews) are available. This prevents agents with only one data
+ * source from reaching 100.
+ *   1 source → max ~67%, 2 sources → max ~83%, all 3 → 100%
  *
  * Tier thresholds: platinum ≥ 80, gold ≥ 60, silver ≥ 40, bronze ≥ 20, else unverified.
  */
@@ -104,10 +109,14 @@ export async function computeTrustScores(pool: Pool): Promise<TrustScoreResult> 
         ? burns.successful_burns / burns.total_requests
         : 0
 
-      // score_volume: log10(total_requests + 1) normalised to 0–1
+      // score_volume: log10(count + 1) normalised to 0–1
+      // Falls back to order count when burn data is unavailable
+      const hasVolume = hasBurns || hasOrders
       const scoreVolume = hasBurns
         ? Math.min(Math.log10(burns.total_requests + 1) / 3, 1)
-        : 0
+        : hasOrders
+          ? Math.min(Math.log10(orders.total_orders + 1) / 3, 1)
+          : 0
 
       // score_repeat_usage: repeat_buyers / unique_buyers
       const scoreRepeatUsage = hasOrders
@@ -130,7 +139,8 @@ export async function computeTrustScores(pool: Pool): Promise<TrustScoreResult> 
 
       // Only include signals that have data
       let activeWeight = 0
-      if (hasBurns) activeWeight += baseWeights.reliability + baseWeights.volume
+      if (hasBurns) activeWeight += baseWeights.reliability
+      if (hasVolume) activeWeight += baseWeights.volume
       if (hasOrders) activeWeight += baseWeights.repeatUsage
       if (hasReviews) activeWeight += baseWeights.reviews
 
@@ -138,12 +148,20 @@ export async function computeTrustScores(pool: Pool): Promise<TrustScoreResult> 
       let trustScore = 0
       if (activeWeight > 0) {
         const scale = 1 / activeWeight
-        trustScore = (
+        const rawScore = (
           (hasBurns ? scoreReliability * baseWeights.reliability * scale : 0) +
           (hasOrders ? scoreRepeatUsage * baseWeights.repeatUsage * scale : 0) +
           (hasReviews ? scoreReviews * baseWeights.reviews * scale : 0) +
-          (hasBurns ? scoreVolume * baseWeights.volume * scale : 0)
+          (hasVolume ? scoreVolume * baseWeights.volume * scale : 0)
         ) * 100
+
+        // Data coverage confidence: agents with fewer independent data
+        // sources (burns, orders, reviews) get their score capped.
+        // 1 source → ×0.67, 2 sources → ×0.83, all 3 → ×1.0
+        const signalGroups = [hasBurns, hasOrders, hasReviews].filter(Boolean).length
+        const coverageFactor = 0.5 + 0.5 * (signalGroups / 3)
+
+        trustScore = rawScore * coverageFactor
       }
 
       const tier = computeTier(trustScore)
@@ -186,6 +204,20 @@ export async function computeTrustScores(pool: Pool): Promise<TrustScoreResult> 
       client.release()
     }
   }
+
+  // Reset trust scores for inactive agents so stale data doesn't persist
+  await pool.query(
+    `UPDATE trust_scores SET
+       trust_score = 0, tier = 'unverified',
+       score_reliability = 0, score_volume = 0,
+       score_repeat_usage = 0, score_reviews = 0,
+       last_computed = NOW()
+     WHERE agent_id IN (
+       SELECT ts.agent_id FROM trust_scores ts
+       LEFT JOIN agents a ON a.id = ts.agent_id
+       WHERE a.is_active = FALSE OR a.id IS NULL
+     )`,
+  )
 
   return result
 }

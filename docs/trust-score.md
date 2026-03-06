@@ -43,13 +43,12 @@ score_reliability = successful_burns / total_requests
 ### 3. Volume (base weight: 20%)
 
 ```
-score_volume = min(log10(total_requests + 1) / 3, 1)
+score_volume = min(log10(count + 1) / 3, 1)
 ```
 
-- **Source**: `agent_computed_stats` where `event_type = 'burn'`
+- **Source**: `agent_computed_stats` — uses `total_requests` from burns when available, falls back to `total_orders` from orders
 - **What it measures**: overall usage scale (logarithmic so early growth counts most)
-- Reaches 1.0 at ~1000 total requests
-- *Not yet implemented — requires burn event scanning*
+- Reaches 1.0 at ~1000 total requests/orders
 
 ### 4. Reviews (base weight: 20%)
 
@@ -63,46 +62,61 @@ score_reviews = avg(score) / 10
 
 ---
 
-## Adaptive Weighting
+## Adaptive Weighting + Data Coverage
 
-Not all signals have data from day one. Instead of penalizing agents for missing data, the formula **redistributes weights proportionally** among signals that have data.
+Not all signals have data from day one. The formula **redistributes weights proportionally** among signals that have data, then applies a **data coverage factor** to prevent agents with limited data from reaching maximum scores.
 
 ### How it works
 
 1. Check which signals have data (burns exist? orders exist? reviews exist?)
-2. Sum the base weights of signals that have data → `activeWeight`
-3. Scale each contributing signal by `1 / activeWeight`
+2. Volume uses burn data when available, otherwise falls back to order count
+3. Sum the base weights of signals that have data → `activeWeight`
+4. Scale each contributing signal by `1 / activeWeight` → `rawScore`
+5. Apply data coverage factor: `coverageFactor = 0.5 + 0.5 × (signalGroups / 3)`
+6. Final score: `trust_score = rawScore × coverageFactor`
+
+Signal groups are the 3 independent data sources: **burns**, **orders**, **reviews**.
 
 ### Example scenarios
 
 **Only orders exist** (current state for most agents):
 
 ```
-activeWeight = 0.25 (repeat_usage only)
-scale = 1 / 0.25 = 4
+activeWeight = 0.25 + 0.20 = 0.45  (repeat_usage + volume from orders)
+scale = 1 / 0.45 ≈ 2.22
+coverageFactor = 0.5 + 0.5 × (1/3) ≈ 0.67
 
-trust_score = score_repeat_usage × 0.25 × 4 × 100
-            = score_repeat_usage × 100
+Agent with 100% repeat buyers, 10 orders:
+  rawScore = (1.0 × 0.25 + 0.35 × 0.20) × 2.22 × 100 = 71.1
+  trust_score = 71.1 × 0.67 = 47.6 (silver)
+
+Agent with 100% repeat buyers, 100 orders:
+  rawScore = (1.0 × 0.25 + 0.67 × 0.20) × 2.22 × 100 = 85.2
+  trust_score = 85.2 × 0.67 = 57.1 (silver)
+
+Agent with 50% repeat buyers, 100 orders:
+  rawScore = (0.5 × 0.25 + 0.67 × 0.20) × 2.22 × 100 = 57.5
+  trust_score = 57.5 × 0.67 = 38.5 (bronze)
 ```
 
-→ An agent with 100% repeat buyers scores **100** (platinum).
+→ Scores are now differentiated by both buyer retention AND order volume.
 
 **Orders + reviews exist**:
 
 ```
-activeWeight = 0.25 + 0.20 = 0.45
-scale = 1 / 0.45 ≈ 2.22
-
-trust_score = (score_repeat_usage × 0.25 + score_reviews × 0.20) × 2.22 × 100
+activeWeight = 0.25 + 0.20 + 0.20 = 0.65
+scale = 1 / 0.65 ≈ 1.54
+coverageFactor = 0.5 + 0.5 × (2/3) ≈ 0.83
 ```
 
-→ Weights become ~55.6% repeat usage, ~44.4% reviews.
+→ Max achievable score is ~83 (gold/platinum border).
 
 **All signals exist** (full formula):
 
 ```
 activeWeight = 0.35 + 0.25 + 0.20 + 0.20 = 1.0
 scale = 1.0
+coverageFactor = 0.5 + 0.5 × (3/3) = 1.0
 
 trust_score = (
   score_reliability  × 0.35 +
@@ -112,7 +126,7 @@ trust_score = (
 ) × 100
 ```
 
-→ Original v8 schema weights apply directly.
+→ Original v8 schema weights apply directly. No cap.
 
 **No data at all**:
 
