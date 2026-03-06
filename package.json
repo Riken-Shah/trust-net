@@ -6,6 +6,8 @@
   "description": "Shared Supabase/PostgreSQL connection pool service for trust-net",
   "scripts": {
     "dev": "tsx src/server.ts",
+    "ingest": "tsx src/ingestion/run.ts",
+    "ingest:reset": "tsx src/ingestion/reset.ts",
     "ingest:once": "tsx src/ingestion/runOnce.ts",
     "ingest:worker": "tsx src/ingestion/worker.ts",
     "intel:snapshot:once": "tsx src/intel/snapshotOnce.ts",
