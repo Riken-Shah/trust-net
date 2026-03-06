@@ -4,6 +4,7 @@
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
+		"setup:cron": "bash scripts/setup-cron.sh",
 		"dev": "wrangler dev",
 		"format": "oxfmt --write .",
 		"lint:fix": "oxlint --fix",

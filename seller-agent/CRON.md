@@ -62,6 +62,17 @@ echo "your-value" | npx wrangler secret put NVM_API_KEY
 echo "your-value" | npx wrangler secret put ETHERSCAN_API_KEY
 ```
 
+For non-interactive setup and deploy, Wrangler also requires `CLOUDFLARE_API_TOKEN`.
+
+One-step setup from `seller-agent/`:
+
+```bash
+export CLOUDFLARE_API_TOKEN=your-cloudflare-api-token
+export NVM_API_KEY=your-nevermined-api-key
+export ETHERSCAN_API_KEY=your-etherscan-api-key
+npm run setup:cron
+```
+
 ## Monitoring
 
 View cron logs in the Cloudflare dashboard under **Workers & Pages → trust-net-mcp → Logs**, or via:
