@@ -277,7 +277,11 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 				   services_sold=EXCLUDED.services_sold, services_provided_per_req=EXCLUDED.services_provided_per_req,
 				   price_per_request_display=EXCLUDED.price_per_request_display, price_metering_unit=EXCLUDED.price_metering_unit,
 				   price_display=EXCLUDED.price_display, api_created_at=EXCLUDED.api_created_at, api_updated_at=EXCLUDED.api_updated_at,
-				   last_synced_at=NOW(), is_active=TRUE
+				   last_synced_at=NOW(), is_active=TRUE,
+				   is_verified=CASE
+				     WHEN agents.is_verified=TRUE AND agents.endpoint_url IS DISTINCT FROM EXCLUDED.endpoint_url THEN FALSE
+				     ELSE agents.is_verified
+				   END
 				 RETURNING id, marketplace_id`,
 				[seller.marketplaceId, seller.teamId, seller.nvmAgentId, seller.walletAddress, seller.teamName, seller.name,
 				 seller.description, seller.category, seller.keywords, seller.marketplaceReady, seller.endpointUrl, seller.servicesSold,
