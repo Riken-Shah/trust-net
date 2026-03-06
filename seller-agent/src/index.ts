@@ -90,9 +90,34 @@ const LIST_AGENTS_SQL = `
 		a.id AS agent_id, a.team_name, a.name, a.description,
 		a.category, a.keywords, a.marketplace_ready, a.endpoint_url,
 		COALESCE(ts.trust_score, 0) AS trust_score, ts.tier,
-		COALESCE(ts.review_count, 0) AS review_count
+		COALESCE(ts.review_count, 0) AS review_count,
+		COALESCE(os.total_orders, 0) AS total_orders,
+		COALESCE(os.unique_buyers, 0) AS unique_buyers,
+		COALESCE(os.repeat_buyers, 0) AS repeat_buyers,
+		COALESCE(rev.total_revenue_usdc, 0) AS total_revenue_usdc,
+		COALESCE(ps.plan_count, 0) AS plan_count
 	FROM agents a
 	LEFT JOIN trust_scores ts ON ts.agent_id = a.id
+	LEFT JOIN (
+		SELECT agent_id,
+			SUM(total_orders) AS total_orders,
+			SUM(unique_buyers) AS unique_buyers,
+			SUM(repeat_buyers) AS repeat_buyers
+		FROM agent_computed_stats
+		WHERE event_type = 'order'
+		GROUP BY agent_id
+	) os ON os.agent_id = a.id
+	LEFT JOIN (
+		SELECT agent_id, SUM(usdc_amount) AS total_revenue_usdc
+		FROM orders
+		GROUP BY agent_id
+	) rev ON rev.agent_id = a.id
+	LEFT JOIN (
+		SELECT agent_id, COUNT(*) AS plan_count
+		FROM agent_services
+		WHERE is_active = TRUE
+		GROUP BY agent_id
+	) ps ON ps.agent_id = a.id
 	WHERE a.is_active = TRUE
 	ORDER BY COALESCE(ts.trust_score, 0) DESC, a.name ASC`;
 
@@ -128,6 +153,11 @@ const SEARCH_AGENTS_SQL = `
 		COALESCE(ts.trust_score, 0) AS trust_score,
 		ts.tier,
 		COALESCE(ts.review_count, 0) AS review_count,
+		COALESCE(os.total_orders, 0) AS total_orders,
+		COALESCE(os.unique_buyers, 0) AS unique_buyers,
+		COALESCE(os.repeat_buyers, 0) AS repeat_buyers,
+		COALESCE(rev.total_revenue_usdc, 0) AS total_revenue_usdc,
+		COALESCE(ps.plan_count, 0) AS plan_count,
 		ts_rank(
 			to_tsvector('english',
 				COALESCE(a.name, '') || ' ' ||
@@ -140,6 +170,26 @@ const SEARCH_AGENTS_SQL = `
 	FROM agents a
 	CROSS JOIN search_input
 	LEFT JOIN trust_scores ts ON ts.agent_id = a.id
+	LEFT JOIN (
+		SELECT agent_id,
+			SUM(total_orders) AS total_orders,
+			SUM(unique_buyers) AS unique_buyers,
+			SUM(repeat_buyers) AS repeat_buyers
+		FROM agent_computed_stats
+		WHERE event_type = 'order'
+		GROUP BY agent_id
+	) os ON os.agent_id = a.id
+	LEFT JOIN (
+		SELECT agent_id, SUM(usdc_amount) AS total_revenue_usdc
+		FROM orders
+		GROUP BY agent_id
+	) rev ON rev.agent_id = a.id
+	LEFT JOIN (
+		SELECT agent_id, COUNT(*) AS plan_count
+		FROM agent_services
+		WHERE is_active = TRUE
+		GROUP BY agent_id
+	) ps ON ps.agent_id = a.id
 	WHERE a.is_active = TRUE
 		AND (
 			to_tsvector('english',
@@ -206,6 +256,23 @@ async function verifyPaymentAnyPlan(
 	return null;
 }
 
+// ─── x402 token verification for reviews ────────────────────────
+
+async function verifyX402Token(
+	token: string,
+	planIds: string[],
+	agentId: string,
+): Promise<{ valid: true; payer: string } | { valid: false; error: string }> {
+	for (const planId of planIds) {
+		const paymentRequired = buildPaymentRequired(planId, { endpoint: "/api/reviews", agentId });
+		const result = await verifyPermissions(paymentRequired, token, 0);
+		if (result.isValid && result.payer) {
+			return { valid: true, payer: result.payer };
+		}
+	}
+	return { valid: false, error: "x402 token verification failed against all configured plans" };
+}
+
 // ─── MCP Agent (Durable Object) ─────────────────────────────────
 
 export class MyMCP extends McpAgent {
@@ -216,7 +283,7 @@ export class MyMCP extends McpAgent {
 
 		this.server.tool(
 			"list_agents",
-			"List all agents with trust scores, payment plans, service info, and computed stats.",
+			"List all agents with trust scores, transaction summary (total_orders, unique_buyers, repeat_buyers, total_revenue_usdc, plan_count), payment plans, service info, and computed stats.",
 			{},
 			async () => {
 				const resp = await fetch(`${workerUrl}/api/agents`);
@@ -230,11 +297,12 @@ export class MyMCP extends McpAgent {
 
 		this.server.tool(
 			"submit_review",
-			"Submit a review for an agent. Requires a burn transaction hash for verification.",
+			"Submit a review for an agent. Provide either x402_token (Nevermined payment proof) or verification_tx + reviewer_address (on-chain burn tx). x402_token is preferred — it automatically resolves the reviewer wallet address.",
 			{
 				agent_id: z.string().describe("UUID of the agent to review"),
-				reviewer_address: z.string().describe("Wallet address of the reviewer"),
-				verification_tx: z.string().describe("Burn transaction hash for verification"),
+				x402_token: z.string().optional().describe("Nevermined x402 access token (proof of purchase). If provided, reviewer_address is resolved automatically."),
+				reviewer_address: z.string().optional().describe("Wallet address of the reviewer (required only with verification_tx)"),
+				verification_tx: z.string().optional().describe("Burn transaction hash for on-chain verification (alternative to x402_token)"),
 				score: z.number().min(1).max(10).describe("Overall score (1-10)"),
 				score_accuracy: z.number().min(1).max(10).optional().describe("Accuracy score (1-10)"),
 				score_speed: z.number().min(1).max(10).optional().describe("Speed score (1-10)"),
@@ -349,28 +417,53 @@ export default {
 				if (request.method === "POST") {
 					const body = await request.json() as Record<string, unknown>;
 					const agentId = body.agent_id as string;
-					const reviewerAddress = body.reviewer_address as string;
-					const verificationTx = body.verification_tx as string;
 					const score = body.score as number;
+					const x402Token = body.x402_token as string | undefined;
+					const verificationTx = body.verification_tx as string | undefined;
+					let reviewerAddress = body.reviewer_address as string | undefined;
 
-					if (!agentId || !reviewerAddress || !verificationTx || !score) {
+					if (!agentId || !score) {
 						await sql.end();
-						return Response.json({ error: "Missing required fields: agent_id, reviewer_address, verification_tx, score" }, { status: 400 });
+						return Response.json({ error: "Missing required fields: agent_id, score" }, { status: 400 });
+					}
+					if (!x402Token && !verificationTx) {
+						await sql.end();
+						return Response.json({ error: "Either x402_token or verification_tx is required" }, { status: 400 });
 					}
 					if (score < 1 || score > 10) {
 						await sql.end();
 						return Response.json({ error: "score must be between 1 and 10" }, { status: 400 });
 					}
 
-					// Verify burn tx on-chain
-					const txCheck = await verifyBurnTx(verificationTx, reviewerAddress);
-					if (!txCheck.valid) {
-						await sql.end();
-						return Response.json({ error: `Transaction verification failed: ${txCheck.error}` }, { status: 400 });
+					let storedVerificationTx: string;
+
+					if (x402Token) {
+						// Verify via x402 token — payer becomes reviewer_address
+						const planIds = getPlanIds(env);
+						const sellerId = env.SELLER_AGENT_ID || "";
+						const tokenCheck = await verifyX402Token(x402Token, planIds, sellerId);
+						if (!tokenCheck.valid) {
+							await sql.end();
+							return Response.json({ error: `x402 token verification failed: ${tokenCheck.error}` }, { status: 400 });
+						}
+						reviewerAddress = tokenCheck.payer;
+						storedVerificationTx = `x402:${x402Token.slice(0, 16)}`;
+					} else {
+						// Existing on-chain burn tx flow
+						if (!reviewerAddress) {
+							await sql.end();
+							return Response.json({ error: "reviewer_address is required when using verification_tx" }, { status: 400 });
+						}
+						const txCheck = await verifyBurnTx(verificationTx!, reviewerAddress);
+						if (!txCheck.valid) {
+							await sql.end();
+							return Response.json({ error: `Transaction verification failed: ${txCheck.error}` }, { status: 400 });
+						}
+						storedVerificationTx = verificationTx!;
 					}
 
 					const rows = await sql.unsafe(INSERT_REVIEW_SQL, [
-						agentId, reviewerAddress, verificationTx, score,
+						agentId, reviewerAddress, storedVerificationTx, score,
 						(body.score_accuracy as number) ?? null,
 						(body.score_speed as number) ?? null,
 						(body.score_value as number) ?? null,
@@ -460,27 +553,64 @@ export default {
 					try {
 						const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
 
-						if (!args.agent_id || !args.reviewer_address || !args.verification_tx || !args.score) {
+						if (!args.agent_id || !args.score) {
 							await sql.end();
 							return Response.json({
 								jsonrpc: "2.0",
-								error: { code: -32602, message: "Missing required fields: agent_id, reviewer_address, verification_tx, score" },
+								error: { code: -32602, message: "Missing required fields: agent_id, score" },
+								id: body.id ?? null,
+							}, { status: 400 });
+						}
+						if (!args.x402_token && !args.verification_tx) {
+							await sql.end();
+							return Response.json({
+								jsonrpc: "2.0",
+								error: { code: -32602, message: "Either x402_token or verification_tx is required" },
 								id: body.id ?? null,
 							}, { status: 400 });
 						}
 
-						const txCheck = await verifyBurnTx(args.verification_tx, args.reviewer_address);
-						if (!txCheck.valid) {
-							await sql.end();
-							return Response.json({
-								jsonrpc: "2.0",
-								error: { code: -32000, message: `Transaction verification failed: ${txCheck.error}` },
-								id: body.id ?? null,
-							}, { status: 400 });
+						let reviewerAddress: string;
+						let storedVerificationTx: string;
+
+						if (args.x402_token) {
+							const planIds = getPlanIds(env);
+							const sellerId = env.SELLER_AGENT_ID || "";
+							const tokenCheck = await verifyX402Token(args.x402_token, planIds, sellerId);
+							if (!tokenCheck.valid) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32000, message: `x402 token verification failed: ${tokenCheck.error}` },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+							reviewerAddress = tokenCheck.payer;
+							storedVerificationTx = `x402:${args.x402_token.slice(0, 16)}`;
+						} else {
+							if (!args.reviewer_address) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32602, message: "reviewer_address is required when using verification_tx" },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+							const txCheck = await verifyBurnTx(args.verification_tx, args.reviewer_address);
+							if (!txCheck.valid) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32000, message: `Transaction verification failed: ${txCheck.error}` },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+							reviewerAddress = args.reviewer_address;
+							storedVerificationTx = args.verification_tx;
 						}
 
 						const rows = await sql.unsafe(INSERT_REVIEW_SQL, [
-							args.agent_id, args.reviewer_address, args.verification_tx, args.score,
+							args.agent_id, reviewerAddress, storedVerificationTx, args.score,
 							args.score_accuracy ?? null, args.score_speed ?? null,
 							args.score_value ?? null, args.score_reliability ?? null,
 							args.comment ?? null,
@@ -526,27 +656,64 @@ export default {
 						try {
 							const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
 
-							if (!args.agent_id || !args.reviewer_address || !args.verification_tx || !args.score) {
+							if (!args.agent_id || !args.score) {
 								await sql.end();
 								return Response.json({
 									jsonrpc: "2.0",
-									error: { code: -32602, message: "Missing required fields: agent_id, reviewer_address, verification_tx, score" },
+									error: { code: -32602, message: "Missing required fields: agent_id, score" },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+							if (!args.x402_token && !args.verification_tx) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32602, message: "Either x402_token or verification_tx is required" },
 									id: body.id ?? null,
 								}, { status: 400 });
 							}
 
-							const txCheck = await verifyBurnTx(args.verification_tx, args.reviewer_address);
-							if (!txCheck.valid) {
-								await sql.end();
-								return Response.json({
-									jsonrpc: "2.0",
-									error: { code: -32000, message: `Transaction verification failed: ${txCheck.error}` },
-									id: body.id ?? null,
-								}, { status: 400 });
+							let reviewerAddress: string;
+							let storedVerificationTx: string;
+
+							if (args.x402_token) {
+								const planIds = getPlanIds(env);
+								const sellerId = env.SELLER_AGENT_ID || "";
+								const tokenCheck = await verifyX402Token(args.x402_token, planIds, sellerId);
+								if (!tokenCheck.valid) {
+									await sql.end();
+									return Response.json({
+										jsonrpc: "2.0",
+										error: { code: -32000, message: `x402 token verification failed: ${tokenCheck.error}` },
+										id: body.id ?? null,
+									}, { status: 400 });
+								}
+								reviewerAddress = tokenCheck.payer;
+								storedVerificationTx = `x402:${args.x402_token.slice(0, 16)}`;
+							} else {
+								if (!args.reviewer_address) {
+									await sql.end();
+									return Response.json({
+										jsonrpc: "2.0",
+										error: { code: -32602, message: "reviewer_address is required when using verification_tx" },
+										id: body.id ?? null,
+									}, { status: 400 });
+								}
+								const txCheck = await verifyBurnTx(args.verification_tx, args.reviewer_address);
+								if (!txCheck.valid) {
+									await sql.end();
+									return Response.json({
+										jsonrpc: "2.0",
+										error: { code: -32000, message: `Transaction verification failed: ${txCheck.error}` },
+										id: body.id ?? null,
+									}, { status: 400 });
+								}
+								reviewerAddress = args.reviewer_address;
+								storedVerificationTx = args.verification_tx;
 							}
 
 							const rows = await sql.unsafe(INSERT_REVIEW_SQL, [
-								args.agent_id, args.reviewer_address, args.verification_tx, args.score,
+								args.agent_id, reviewerAddress, storedVerificationTx, args.score,
 								args.score_accuracy ?? null, args.score_speed ?? null,
 								args.score_value ?? null, args.score_reliability ?? null,
 								args.comment ?? null,
@@ -705,18 +872,19 @@ export default {
 							tools: [
 								{
 									name: "list_agents",
-									description: "List all agents with trust scores, payment plans, service info, and computed stats.",
+									description: "List all agents with trust scores, transaction summary (total_orders, unique_buyers, repeat_buyers, total_revenue_usdc, plan_count), payment plans, service info, and computed stats.",
 									inputSchema: { type: "object", properties: {} },
 								},
 								{
 									name: "submit_review",
-									description: "Submit a review for an agent. Requires a burn transaction hash for verification.",
+									description: "Submit a review for an agent. Provide either x402_token (Nevermined payment proof) or verification_tx + reviewer_address (on-chain burn tx). x402_token is preferred — it automatically resolves the reviewer wallet address.",
 									inputSchema: {
 										type: "object",
 										properties: {
 											agent_id: { type: "string", description: "UUID of the agent to review" },
-											reviewer_address: { type: "string", description: "Wallet address of the reviewer" },
-											verification_tx: { type: "string", description: "Burn transaction hash for verification" },
+											x402_token: { type: "string", description: "Nevermined x402 access token (proof of purchase). If provided, reviewer_address is resolved automatically." },
+											reviewer_address: { type: "string", description: "Wallet address of the reviewer (required only with verification_tx)" },
+											verification_tx: { type: "string", description: "Burn transaction hash for on-chain verification (alternative to x402_token)" },
 											score: { type: "number", description: "Overall score (1-10)", minimum: 1, maximum: 10 },
 											score_accuracy: { type: "number", description: "Accuracy score (1-10)", minimum: 1, maximum: 10 },
 											score_speed: { type: "number", description: "Speed score (1-10)", minimum: 1, maximum: 10 },
@@ -724,7 +892,7 @@ export default {
 											score_reliability: { type: "number", description: "Reliability score (1-10)", minimum: 1, maximum: 10 },
 											comment: { type: "string", description: "Optional review comment" },
 										},
-										required: ["agent_id", "reviewer_address", "verification_tx", "score"],
+										required: ["agent_id", "score"],
 									},
 								},
 								{
