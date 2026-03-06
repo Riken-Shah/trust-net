@@ -1,0 +1,22 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "trust-net-buyer",
+	"account_id": "ef44744f424f5bb00d8640febf528286",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-03-10",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"observability": {
+		"enabled": true
+	},
+	"hyperdrive": [
+		{
+			"binding": "HYPERDRIVE",
+			"id": "6c06a2bc37b44bb1b1053b78cba6bf88"
+		}
+	],
+	"triggers": {
+		"crons": ["0 */6 * * *"]
+	}
+}

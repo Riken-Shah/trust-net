@@ -1,0 +1,20 @@
+{
+	"name": "trust-net-buyer",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"setup:cron": "bash scripts/setup-cron.sh",
+		"dev": "wrangler dev",
+		"type-check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@nevermined-io/payments": "^0.7.0",
+		"postgres": "^3.4.8"
+	},
+	"devDependencies": {
+		"@types/node": "^25.3.5",
+		"typescript": "5.9.3",
+		"wrangler": "^4.71.0"
+	}
+}
