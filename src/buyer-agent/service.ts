@@ -18,7 +18,7 @@ import {
   completeRun,
   createRun,
   failRun,
-  fetchUnverifiedSellers,
+  fetchSellerCandidates,
   insertJudgment,
   insertSetupFailure,
   markSellerVerified,
@@ -239,13 +239,14 @@ export async function runBuyerAgentVerification(pool: Pool, config: BuyerAgentCo
   }
 
   try {
-    const sellers = await fetchUnverifiedSellers(pool, {
+    const sellers = await fetchSellerCandidates(pool, {
       maxSellers: config.maxSellers,
       targetSeller: config.targetSeller,
+      includeVerifiedSellers: config.includeVerifiedSellers,
       includeVerifiedTarget: config.includeVerifiedTarget,
     })
 
-    console.log(`Buyer-agent: ${sellers.length} unverified seller(s) to scan`)
+    console.log(`Buyer-agent: ${sellers.length} seller(s) to scan`)
 
     for (const seller of sellers) {
       summary.sellersScanned += 1

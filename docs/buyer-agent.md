@@ -14,6 +14,9 @@ It supports all three Nevermined payment protocols (**x402**, **A2A**, **MCP**) 
 # Verify all unverified sellers (pass score = 1, any success = verified)
 npm run buyer-agent:verify
 
+# Verify all sellers, including rows where agents.is_verified = TRUE
+npm run buyer-agent:verify -- --include-verified
+
 # Verify a single seller by name, agent ID, marketplace ID, or NVM agent ID
 npm run buyer-agent:verify:one "Mog Markets"
 npm run buyer-agent:verify:one "72b6b183-b801-458b-bd9d-f44711aade90"
@@ -38,6 +41,12 @@ npm run buyer-agent:run:one "AiRI — AI Resilience Index"
 | `BUYER_AGENT_MAX_SELLERS` | No | unlimited | Cap the number of sellers scanned per run |
 | `BUYER_AGENT_TARGET_SELLER` | No | — | Restrict to a single seller (ID, name, or marketplace ID) |
 | `BUYER_AGENT_INCLUDE_VERIFIED_TARGET` | No | `false` | Re-test an already-verified target seller |
+
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--include-verified` | Include sellers already marked `is_verified = TRUE` in a full run |
 
 ---
 
@@ -68,7 +77,7 @@ service.ts          Main orchestrator
 
 ## Verification Pipeline
 
-For each unverified seller in the database:
+For each selected seller in the database:
 
 ### 1. Endpoint Validation
 

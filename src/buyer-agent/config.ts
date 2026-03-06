@@ -4,6 +4,10 @@ const DEFAULT_MODEL = 'gpt-4o-mini'
 const DEFAULT_TIMEOUT_MS = 15000
 const DEFAULT_PASS_SCORE = 6
 
+export interface BuyerAgentConfigOverrides {
+  includeVerifiedSellers?: boolean
+}
+
 function getTrimmedEnv(name: string, env: NodeJS.ProcessEnv): string {
   return (env[name] ?? '').trim()
 }
@@ -71,7 +75,10 @@ function parseEnvironment(raw: string): BuyerAgentConfig['nvmEnvironment'] {
   throw new Error("NVM_ENVIRONMENT must be one of: 'sandbox', 'staging_sandbox', 'live'.")
 }
 
-export function loadBuyerAgentConfig(env: NodeJS.ProcessEnv = process.env): BuyerAgentConfig {
+export function loadBuyerAgentConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: BuyerAgentConfigOverrides = {},
+): BuyerAgentConfig {
   const nvmApiKey = getTrimmedEnv('NVM_BUYER_API_KEY', env) || getTrimmedEnv('NVM_API_KEY', env)
   if (!nvmApiKey) {
     throw new Error('NVM_BUYER_API_KEY (or NVM_API_KEY) is required.')
@@ -93,6 +100,7 @@ export function loadBuyerAgentConfig(env: NodeJS.ProcessEnv = process.env): Buye
     passScore: parsePassScore(getTrimmedEnv('BUYER_AGENT_PASS_SCORE', env)),
     maxSellers: parseNullablePositiveInt(getTrimmedEnv('BUYER_AGENT_MAX_SELLERS', env), 'BUYER_AGENT_MAX_SELLERS'),
     targetSeller: getTrimmedEnv('BUYER_AGENT_TARGET_SELLER', env) || null,
+    includeVerifiedSellers: overrides.includeVerifiedSellers ?? false,
     includeVerifiedTarget: parseBoolean(
       getTrimmedEnv('BUYER_AGENT_INCLUDE_VERIFIED_TARGET', env),
       'BUYER_AGENT_INCLUDE_VERIFIED_TARGET',

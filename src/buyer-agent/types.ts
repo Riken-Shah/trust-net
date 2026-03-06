@@ -16,6 +16,7 @@ export interface BuyerAgentConfig {
   passScore: number
   maxSellers: number | null
   targetSeller: string | null
+  includeVerifiedSellers: boolean
   includeVerifiedTarget: boolean
   cardDelegation: CardDelegation | null
 }

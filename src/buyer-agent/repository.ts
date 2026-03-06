@@ -37,15 +37,20 @@ function asJson(value: unknown): string | null {
 export interface SellerSelectionOptions {
   maxSellers: number | null
   targetSeller: string | null
+  includeVerifiedSellers: boolean
   includeVerifiedTarget: boolean
 }
 
-export async function fetchUnverifiedSellers(
+export async function fetchSellerCandidates(
   pool: Pool,
   options: SellerSelectionOptions,
 ): Promise<SellerCandidate[]> {
-  const values: Array<string | number | boolean | null> = [options.targetSeller, options.includeVerifiedTarget]
-  const limitClause = options.maxSellers !== null ? 'LIMIT $3' : ''
+  const values: Array<string | number | boolean | null> = [
+    options.targetSeller,
+    options.includeVerifiedSellers,
+    options.includeVerifiedTarget,
+  ]
+  const limitClause = options.maxSellers !== null ? 'LIMIT $4' : ''
   if (options.maxSellers !== null) {
     values.push(options.maxSellers)
   }
@@ -63,7 +68,11 @@ export async function fetchUnverifiedSellers(
       WHERE is_active = TRUE
         AND endpoint_url IS NOT NULL
         AND btrim(endpoint_url) <> ''
-        AND (is_verified = FALSE OR ($1::text IS NOT NULL AND $2::boolean = TRUE))
+        AND (
+          is_verified = FALSE
+          OR $2::boolean = TRUE
+          OR ($1::text IS NOT NULL AND $3::boolean = TRUE)
+        )
         AND (
           $1::text IS NULL
           OR (
