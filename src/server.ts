@@ -3,6 +3,8 @@ import express, { type Request, type Response } from 'express'
 import { Payments, type EnvironmentName } from '@nevermined-io/payments'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+// @ts-expect-error — internal SDK module, needed to pass HTTP headers to paywall
+import { requestContextStorage } from '@nevermined-io/payments/dist/mcp/http/mcp-handler.js'
 
 import {
   closeDbPool,
@@ -202,7 +204,12 @@ async function bootstrap(): Promise<void> {
       })
 
       await server.connect(transport as unknown as import('@modelcontextprotocol/sdk/shared/transport.js').Transport)
-      await transport.handleRequest(req, res, req.body)
+
+      // Run within requestContextStorage so the paywall can read Authorization header
+      const requestContext = { headers: req.headers, method: req.method, url: req.url, ip: req.ip }
+      await requestContextStorage.run(requestContext, () =>
+        transport.handleRequest(req, res, req.body),
+      )
 
       // Clean up after the response is sent
       res.on('close', () => {
