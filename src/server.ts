@@ -3,20 +3,7 @@ import express, { type Request, type Response } from 'express'
 import { Payments, type EnvironmentName } from '@nevermined-io/payments'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import { createRequire } from 'module'
-
-// Load the SDK's requestContextStorage (AsyncLocalStorage instance) that the
-// paywall reads via getCurrentRequestContext(). We use createRequire to bypass
-// the package.json "exports" restriction on internal paths.
-const require = createRequire(import.meta.url)
-const { requestContextStorage } = require('@nevermined-io/payments/dist/mcp/http/mcp-handler.js') as {
-  requestContextStorage: import('async_hooks').AsyncLocalStorage<{
-    headers: Record<string, string | string[] | undefined>
-    method?: string
-    url?: string
-    ip?: string
-  }>
-}
+import { z } from 'zod'
 
 import {
   closeDbPool,
@@ -25,6 +12,7 @@ import {
   ensureIntelSchema,
   getDbPool,
   initDbPool,
+  type IntelService,
   loadIntelRuntimeConfig,
   pingDb,
 } from './index.js'
@@ -155,7 +143,12 @@ payments.mcp.configure({
   serverName: 'seller-agent-service',
 })
 
-function createMcpServerInstance(): McpServer {
+type SearchAgentsArgs = {
+  query: string
+  limit?: number
+}
+
+function createMcpServerInstance(intelService: IntelService): McpServer {
   const server = new McpServer({
     name: 'seller-agent-service',
     version: '0.1.0',
@@ -176,6 +169,52 @@ function createMcpServerInstance(): McpServer {
           {
             type: 'text' as const,
             text: JSON.stringify({ items }, null, 2),
+          },
+        ],
+      }
+    },
+    { credits: 2n },
+  )
+
+  paywalledServer.registerTool(
+    'search_agents',
+    {
+      title: 'Search Agents',
+      description:
+        'Search agents using a natural-language query and return ranked matches with relevance and trust signals.',
+      inputSchema: {
+        query: z
+          .string()
+          .min(1)
+          .describe('Natural-language search query, e.g. "best web search agent for market research".'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe('Optional max number of results to return (1-50).'),
+      },
+    },
+    async (args: SearchAgentsArgs) => {
+      const result = await intelService.search(args.query)
+      const appliedLimit = args.limit ?? result.results.length
+      const cappedLimit = Math.max(1, Math.min(50, appliedLimit))
+      const limitedResults = result.results.slice(0, cappedLimit)
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                ...result,
+                resultCount: limitedResults.length,
+                results: limitedResults,
+              },
+              null,
+              2,
+            ),
           },
         ],
       }
@@ -210,18 +249,16 @@ async function bootstrap(): Promise<void> {
         req.headers.accept = 'application/json, text/event-stream'
       }
 
-      const server = createMcpServerInstance()
+      const server = createMcpServerInstance(intelService)
       const transport = new StreamableHTTPServerTransport({
         enableJsonResponse: true,
       })
 
       await server.connect(transport as unknown as import('@modelcontextprotocol/sdk/shared/transport.js').Transport)
 
-      // Run within requestContextStorage so the paywall can read Authorization header
-      const requestContext = { headers: req.headers, method: req.method, url: req.url, ip: req.ip ?? '' }
-      await requestContextStorage.run(requestContext, () =>
-        transport.handleRequest(req, res, req.body),
-      )
+      // Payments MCP auth reads Authorization from MCP "extra" context first.
+      // The Streamable HTTP transport provides this, so no internal SDK imports are needed.
+      await transport.handleRequest(req, res, req.body)
 
       // Clean up after the response is sent
       res.on('close', () => {
