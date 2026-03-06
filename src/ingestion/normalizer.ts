@@ -19,13 +19,6 @@ function asOptionalString(value: unknown): string | null {
   return asTrimmedString(value)
 }
 
-function asBoolean(value: unknown, defaultValue = false): boolean {
-  if (typeof value === 'boolean') {
-    return value
-  }
-  return defaultValue
-}
-
 function asNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value
@@ -68,7 +61,22 @@ function asStringList(value: unknown): string[] {
 
 function getSellerIdForError(rawSeller: unknown): string | null {
   const record = asObject(rawSeller)
-  return record ? asTrimmedString(record.id) : null
+  if (!record) {
+    return null
+  }
+
+  const nvmAgentId = asTrimmedString(record.nvmAgentId)
+  if (nvmAgentId) {
+    return nvmAgentId
+  }
+
+  const teamId = asTrimmedString(record.teamId)
+  const name = asTrimmedString(record.name)
+  if (teamId && name) {
+    return `${teamId}:${name}`
+  }
+
+  return teamId ?? name
 }
 
 function buildReject(rawSeller: unknown, reason: string): SellerReject {
@@ -76,6 +84,26 @@ function buildReject(rawSeller: unknown, reason: string): SellerReject {
     sellerId: getSellerIdForError(rawSeller),
     reason,
   }
+}
+
+function maxPlanPriceFromPlanPricing(value: unknown): number | null {
+  if (!Array.isArray(value)) {
+    return null
+  }
+
+  let maxPrice: number | null = null
+  for (const item of value) {
+    const record = asObject(item)
+    const planPrice = record ? asNumber(record.planPrice) : null
+    if (planPrice === null) {
+      continue
+    }
+    if (maxPrice === null || planPrice > maxPrice) {
+      maxPrice = planPrice
+    }
+  }
+
+  return maxPrice
 }
 
 export function normalizeSeller(rawSeller: unknown): { seller: NormalizedSeller | null; reject: SellerReject | null } {
@@ -87,17 +115,20 @@ export function normalizeSeller(rawSeller: unknown): { seller: NormalizedSeller 
     }
   }
 
-  const marketplaceId = asTrimmedString(record.id)
+  const pricing = asObject(record.pricing)
   const teamId = asTrimmedString(record.teamId)
+  const nvmAgentId = asTrimmedString(record.nvmAgentId)
   const walletAddress = asTrimmedString(record.walletAddress)
   const name = asTrimmedString(record.name)
+  const endpointUrl = asTrimmedString(record.endpointUrl)
+  const createdAt = asTimestamp(record.createdAt)
   const planIds = asStringList(record.planIds)
 
-  if (!marketplaceId) {
-    return { seller: null, reject: buildReject(rawSeller, 'Missing required field: id.') }
-  }
   if (!teamId) {
     return { seller: null, reject: buildReject(rawSeller, 'Missing required field: teamId.') }
+  }
+  if (!nvmAgentId) {
+    return { seller: null, reject: buildReject(rawSeller, 'Missing required field: nvmAgentId.') }
   }
   if (!walletAddress) {
     return { seller: null, reject: buildReject(rawSeller, 'Missing required field: walletAddress.') }
@@ -105,30 +136,33 @@ export function normalizeSeller(rawSeller: unknown): { seller: NormalizedSeller 
   if (!name) {
     return { seller: null, reject: buildReject(rawSeller, 'Missing required field: name.') }
   }
+  if (!endpointUrl) {
+    return { seller: null, reject: buildReject(rawSeller, 'Missing required field: endpointUrl.') }
+  }
+  if (!createdAt) {
+    return { seller: null, reject: buildReject(rawSeller, 'Missing required field: createdAt.') }
+  }
   if (planIds.length === 0) {
     return { seller: null, reject: buildReject(rawSeller, 'Missing required field: planIds[].') }
   }
 
   return {
     seller: {
-      marketplaceId,
       teamId,
-      nvmAgentId: asOptionalString(record.nvmAgentId),
+      nvmAgentId,
       walletAddress: walletAddress.toLowerCase(),
       teamName: asOptionalString(record.teamName),
       name,
       description: asOptionalString(record.description),
       category: asOptionalString(record.category),
       keywords: asStringList(record.keywords),
-      marketplaceReady: asBoolean(record.marketplaceReady, false),
-      endpointUrl: asOptionalString(record.endpointUrl),
+      endpointUrl,
       servicesSold: asOptionalString(record.servicesSold),
-      servicesProvidedPerRequest: asOptionalString(record.servicesProvidedPerRequest),
-      pricePerRequestDisplay: asOptionalString(record.pricePerRequest),
-      priceMeteringUnit: asOptionalString(record.priceMeteringUnit),
-      priceDisplay: asNumber(record.price),
-      apiCreatedAt: asTimestamp(record.createdAt),
-      apiUpdatedAt: asTimestamp(record.updatedAt),
+      servicesProvidedPerRequest: asOptionalString(pricing?.servicesPerRequest),
+      pricePerRequestDisplay: asOptionalString(pricing?.perRequest),
+      priceMeteringUnit: asOptionalString(pricing?.meteringUnit),
+      priceDisplay: maxPlanPriceFromPlanPricing(record.planPricing),
+      apiCreatedAt: createdAt,
       planIds,
     },
     reject: null,

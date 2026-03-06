@@ -18,6 +18,8 @@ var/
 wheels/
 *.egg-info/
 .installed.cfg
+
+/tmp
 *.egg
 
 # Environment files

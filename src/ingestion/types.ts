@@ -1,27 +1,24 @@
-export interface MarketplaceSnapshot {
+export interface DiscoverSnapshot {
   sellers: unknown[]
   buyers: unknown[]
 }
 
 export interface NormalizedSeller {
-  marketplaceId: string
   teamId: string
-  nvmAgentId: string | null
+  nvmAgentId: string
   walletAddress: string
   teamName: string | null
   name: string
   description: string | null
   category: string | null
   keywords: string[]
-  marketplaceReady: boolean
-  endpointUrl: string | null
+  endpointUrl: string
   servicesSold: string | null
   servicesProvidedPerRequest: string | null
   pricePerRequestDisplay: string | null
   priceMeteringUnit: string | null
   priceDisplay: number | null
-  apiCreatedAt: Date | null
-  apiUpdatedAt: Date | null
+  apiCreatedAt: Date
   planIds: string[]
 }
 

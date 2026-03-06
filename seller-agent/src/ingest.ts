@@ -13,24 +13,21 @@ import postgres, { type Sql, type TransactionSql } from "postgres";
 // ─── Types ────────────────────────────────────────────────────────
 
 interface NormalizedSeller {
-	marketplaceId: string;
 	teamId: string;
-	nvmAgentId: string | null;
+	nvmAgentId: string;
 	walletAddress: string;
 	teamName: string | null;
 	name: string;
 	description: string | null;
 	category: string | null;
 	keywords: string[];
-	marketplaceReady: boolean;
-	endpointUrl: string | null;
+	endpointUrl: string;
 	servicesSold: string | null;
 	servicesProvidedPerRequest: string | null;
 	pricePerRequestDisplay: string | null;
 	priceMeteringUnit: string | null;
 	priceDisplay: number | null;
-	apiCreatedAt: Date | null;
-	apiUpdatedAt: Date | null;
+	apiCreatedAt: Date;
 	planIds: string[];
 }
 
@@ -74,6 +71,11 @@ interface IngestionResult {
 	durationMs: number;
 }
 
+interface AgentRow {
+	id: string;
+	marketplace_id: string;
+}
+
 interface AgentIdentityCandidate {
 	id: string;
 	marketplace_id: string;
@@ -81,11 +83,23 @@ interface AgentIdentityCandidate {
 	endpoint_match: number;
 	name_match: number;
 	team_name_match: number;
+	last_synced_at: Date | null;
+}
+
+interface ActiveServiceKey {
+	agentId: string;
+	planId: string;
+}
+
+interface IdentityResolution {
+	marketplaceId: string | null;
+	protectedMarketplaceIds: string[];
+	protectedServiceKeys: ActiveServiceKey[];
 }
 
 // ─── Config ───────────────────────────────────────────────────────
 
-const MARKETPLACE_API_URL = "https://nevermined.ai/hackathon/register/api/marketplace?side=all";
+const DISCOVER_API_URL = "https://nevermined.ai/hackathon/register/api/discover?side=all";
 const ETHERSCAN_API_URL = "https://api.etherscan.io/v2/api";
 const CHAIN_ID = "84532";
 const CHAIN_NETWORK = "eip155:84532";
@@ -119,10 +133,6 @@ function asStringList(value: unknown): string[] {
 	return [...s];
 }
 
-function asBoolean(value: unknown, def = false): boolean {
-	return typeof value === "boolean" ? value : def;
-}
-
 function asNumber(value: unknown): number | null {
 	if (typeof value === "number" && Number.isFinite(value)) return value;
 	if (typeof value === "string") {
@@ -139,41 +149,42 @@ function asTimestamp(value: unknown): Date | null {
 	return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function planIdsFromPlanPricing(value: unknown): string[] {
-	if (!Array.isArray(value)) return [];
-	const planIds = new Set<string>();
+function maxPlanPriceFromPlanPricing(value: unknown): number | null {
+	if (!Array.isArray(value)) return null;
+
+	let maxPrice: number | null = null;
 	for (const item of value) {
 		const record = asRecord(item);
-		const planId = record ? asTrimmedString(record.planDid) : null;
-		if (planId) planIds.add(planId);
+		const planPrice = record ? asNumber(record.planPrice) : null;
+		if (planPrice === null) continue;
+		if (maxPrice === null || planPrice > maxPrice) {
+			maxPrice = planPrice;
+		}
 	}
-	return [...planIds];
+
+	return maxPrice;
+}
+
+function compareCandidateRank(left: AgentIdentityCandidate, right: AgentIdentityCandidate): number {
+	const comparisons = [
+		left.plan_overlap - right.plan_overlap,
+		left.endpoint_match - right.endpoint_match,
+		left.name_match - right.name_match,
+		left.team_name_match - right.team_name_match,
+		(left.last_synced_at?.getTime() ?? -1) - (right.last_synced_at?.getTime() ?? -1),
+	];
+
+	for (const comparison of comparisons) {
+		if (comparison !== 0) return comparison;
+	}
+
+	return 0;
 }
 
 function pickIdentityCandidate(candidates: AgentIdentityCandidate[]): AgentIdentityCandidate | null {
 	if (candidates.length === 0) return null;
 	if (candidates.length === 1) return candidates[0];
-
-	const overlappingPlans = candidates.filter((candidate) => candidate.plan_overlap > 0);
-	if (overlappingPlans.length === 1) return overlappingPlans[0];
-	if (overlappingPlans.length > 1 && overlappingPlans[0].plan_overlap > overlappingPlans[1].plan_overlap) {
-		return overlappingPlans[0];
-	}
-
-	const metadataMatches = candidates.filter(
-		(candidate) => candidate.endpoint_match + candidate.name_match + candidate.team_name_match > 0,
-	);
-	if (metadataMatches.length === 1) return metadataMatches[0];
-
-	const [best, next] = candidates;
-	if (!next) return best;
-	const bestMetadataScore = best.endpoint_match + best.name_match + best.team_name_match;
-	const nextMetadataScore = next.endpoint_match + next.name_match + next.team_name_match;
-	if (bestMetadataScore > 0 && bestMetadataScore > nextMetadataScore) {
-		return best;
-	}
-
-	return null;
+	return compareCandidateRank(candidates[0], candidates[1]) > 0 ? candidates[0] : null;
 }
 
 // ─── Plan mapper (from SDK response) ─────────────────────────────
@@ -246,63 +257,55 @@ function normalizeSeller(raw: unknown): NormalizedSeller | null {
 	const r = asRecord(raw);
 	if (!r) return null;
 	const pricing = asRecord(r.pricing);
-	const marketplaceId = asTrimmedString(r.id);
 	const teamId = asTrimmedString(r.teamId);
-	const walletAddress = asTrimmedString(r.walletAddress) ?? teamId;
+	const nvmAgentId = asTrimmedString(r.nvmAgentId);
+	const walletAddress = asTrimmedString(r.walletAddress);
 	const name = asTrimmedString(r.name);
+	const endpointUrl = asTrimmedString(r.endpointUrl);
+	const apiCreatedAt = asTimestamp(r.createdAt);
 	const planIds = asStringList(r.planIds);
-	const resolvedPlanIds = planIds.length > 0 ? planIds : planIdsFromPlanPricing(r.planPricing);
-	if (!marketplaceId || !teamId || !walletAddress || !name || resolvedPlanIds.length === 0) return null;
+	if (!teamId || !nvmAgentId || !walletAddress || !name || !endpointUrl || !apiCreatedAt || planIds.length === 0) return null;
 	return {
-		marketplaceId, teamId,
-		nvmAgentId: asTrimmedString(r.nvmAgentId),
+		teamId,
+		nvmAgentId,
 		walletAddress: walletAddress.toLowerCase(),
 		teamName: asTrimmedString(r.teamName),
 		name, description: asTrimmedString(r.description),
 		category: asTrimmedString(r.category),
 		keywords: asStringList(r.keywords),
-		marketplaceReady: asBoolean(r.marketplaceReady),
-		endpointUrl: asTrimmedString(r.endpointUrl),
+		endpointUrl,
 		servicesSold: asTrimmedString(r.servicesSold),
-		servicesProvidedPerRequest: asTrimmedString(r.servicesProvidedPerRequest) ?? asTrimmedString(pricing?.servicesPerRequest),
-		pricePerRequestDisplay: asTrimmedString(r.pricePerRequest) ?? asTrimmedString(pricing?.perRequest),
-		priceMeteringUnit: asTrimmedString(r.priceMeteringUnit) ?? asTrimmedString(pricing?.meteringUnit),
-		priceDisplay: asNumber(r.price),
-		apiCreatedAt: asTimestamp(r.createdAt),
-		apiUpdatedAt: asTimestamp(r.updatedAt),
-		planIds: resolvedPlanIds,
+		servicesProvidedPerRequest: asTrimmedString(pricing?.servicesPerRequest),
+		pricePerRequestDisplay: asTrimmedString(pricing?.perRequest),
+		priceMeteringUnit: asTrimmedString(pricing?.meteringUnit),
+		priceDisplay: maxPlanPriceFromPlanPricing(r.planPricing),
+		apiCreatedAt,
+		planIds,
 	};
 }
 
-async function reconcileMarketplaceId(tx: TransactionSql, seller: NormalizedSeller): Promise<boolean> {
-	const existingRows = await tx.unsafe<{ id: string }[]>(
-		`SELECT id FROM agents WHERE marketplace_id=$1 LIMIT 1`,
-		[seller.marketplaceId],
-	);
-	if (existingRows[0]) return false;
+async function loadProtectedServiceKeys(tx: TransactionSql, agentIds: string[]): Promise<ActiveServiceKey[]> {
+	if (agentIds.length === 0) return [];
+	return tx.unsafe<{ agent_id: string; nvm_plan_id: string }[]>(
+		`SELECT agent_id, nvm_plan_id FROM agent_services WHERE is_active=TRUE AND agent_id = ANY($1::uuid[])`,
+		[agentIds],
+	).then((rows) => rows.map((row) => ({ agentId: row.agent_id, planId: row.nvm_plan_id })));
+}
 
-	if (seller.nvmAgentId) {
-		const nvmMatches = await tx.unsafe<{ id: string }[]>(
-			`SELECT id FROM agents WHERE nvm_agent_id=$1 AND marketplace_id<>$2 ORDER BY last_synced_at DESC NULLS LAST, id ASC LIMIT 2`,
-			[seller.nvmAgentId, seller.marketplaceId],
-		);
-		if (nvmMatches.length === 1) {
-			const updated = await tx.unsafe<{ id: string }[]>(
-				`UPDATE agents
-				 SET marketplace_id=$1
-				 WHERE id=$2
-				   AND marketplace_id<>$1
-				   AND NOT EXISTS (
-				     SELECT 1
-				     FROM agents current
-				     WHERE current.marketplace_id=$1
-				       AND current.id<>$2
-				   )
-				 RETURNING id`,
-				[seller.marketplaceId, nvmMatches[0].id],
-			);
-			return Boolean(updated[0]);
-		}
+async function resolvePersistedMarketplaceId(tx: TransactionSql, seller: NormalizedSeller): Promise<IdentityResolution> {
+	const nvmMatches = await tx.unsafe<AgentRow[]>(
+		`SELECT id, marketplace_id FROM agents WHERE nvm_agent_id=$1 ORDER BY last_synced_at DESC NULLS LAST, id ASC LIMIT 2`,
+		[seller.nvmAgentId],
+	);
+	if (nvmMatches.length === 1) {
+		return { marketplaceId: nvmMatches[0].marketplace_id, protectedMarketplaceIds: [], protectedServiceKeys: [] };
+	}
+	if (nvmMatches.length > 1) {
+		return {
+			marketplaceId: null,
+			protectedMarketplaceIds: nvmMatches.map((row) => row.marketplace_id),
+			protectedServiceKeys: await loadProtectedServiceKeys(tx, nvmMatches.map((row) => row.id)),
+		};
 	}
 
 	const candidates = await tx.unsafe<AgentIdentityCandidate[]>(
@@ -312,13 +315,16 @@ async function reconcileMarketplaceId(tx: TransactionSql, seller: NormalizedSell
 		   COUNT(*) FILTER (WHERE services.nvm_plan_id = ANY($3::text[]))::int AS plan_overlap,
 		   CASE WHEN a.endpoint_url IS NOT DISTINCT FROM $4 THEN 1 ELSE 0 END::int AS endpoint_match,
 		   CASE WHEN a.name IS NOT DISTINCT FROM $5 THEN 1 ELSE 0 END::int AS name_match,
-		   CASE WHEN a.team_name IS NOT DISTINCT FROM $6 THEN 1 ELSE 0 END::int AS team_name_match
+		   CASE WHEN a.team_name IS NOT DISTINCT FROM $6 THEN 1 ELSE 0 END::int AS team_name_match,
+		   a.last_synced_at
 		 FROM agents a
 		 LEFT JOIN agent_services services
 		   ON services.agent_id = a.id
 		  AND services.is_active = TRUE
-		 WHERE (a.team_id=$1 OR a.wallet_address=$2)
-		   AND a.marketplace_id<>$7
+		 WHERE a.is_active = TRUE
+		   AND a.team_id=$1
+		   AND a.wallet_address=$2
+		   AND a.nvm_agent_id IS NULL
 		 GROUP BY a.id, a.marketplace_id, a.endpoint_url, a.name, a.team_name, a.last_synced_at
 		 ORDER BY
 		   plan_overlap DESC,
@@ -327,27 +333,21 @@ async function reconcileMarketplaceId(tx: TransactionSql, seller: NormalizedSell
 		   team_name_match DESC,
 		   a.last_synced_at DESC NULLS LAST,
 		   a.id ASC`,
-		[seller.teamId, seller.walletAddress, seller.planIds, seller.endpointUrl, seller.name, seller.teamName, seller.marketplaceId],
+		[seller.teamId, seller.walletAddress, seller.planIds, seller.endpointUrl, seller.name, seller.teamName],
 	);
 
 	const match = pickIdentityCandidate(candidates);
-	if (!match) return false;
-
-	const updated = await tx.unsafe<{ id: string }[]>(
-		`UPDATE agents
-		 SET marketplace_id=$1
-		 WHERE id=$2
-		   AND marketplace_id<>$1
-		   AND NOT EXISTS (
-		     SELECT 1
-		     FROM agents current
-		     WHERE current.marketplace_id=$1
-		       AND current.id<>$2
-		   )
-		 RETURNING id`,
-		[seller.marketplaceId, match.id],
-	);
-	return Boolean(updated[0]);
+	if (match) {
+		return { marketplaceId: match.marketplace_id, protectedMarketplaceIds: [], protectedServiceKeys: [] };
+	}
+	if (candidates.length > 1) {
+		return {
+			marketplaceId: null,
+			protectedMarketplaceIds: candidates.map((row) => row.marketplace_id),
+			protectedServiceKeys: await loadProtectedServiceKeys(tx, candidates.map((row) => row.id)),
+		};
+	}
+	return { marketplaceId: seller.nvmAgentId, protectedMarketplaceIds: [], protectedServiceKeys: [] };
 }
 
 async function enrichPlans(planIds: string[], nvmApiKey: string, nvmEnvironment: string): Promise<Map<string, PlanEnrichment>> {
@@ -370,9 +370,14 @@ async function enrichPlans(planIds: string[], nvmApiKey: string, nvmEnvironment:
 }
 
 async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment: string) {
-	// Fetch marketplace snapshot
-	const resp = await fetch(MARKETPLACE_API_URL, { headers: { accept: "application/json" } });
-	if (!resp.ok) throw new Error(`Marketplace API failed: ${resp.status}`);
+	// Fetch discover snapshot
+	const resp = await fetch(DISCOVER_API_URL, {
+		headers: {
+			accept: "application/json",
+			"x-nvm-api-key": nvmApiKey,
+		},
+	});
+	if (!resp.ok) throw new Error(`Discover API failed: ${resp.status}`);
 	const data = await resp.json() as { sellers: unknown[]; buyers: unknown[] };
 
 	// Normalize sellers
@@ -389,24 +394,30 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 	// Persist in a transaction
 	const stats = await sql.begin(async (tx: TransactionSql) => {
 		let agentsUpserted = 0;
-		let marketplaceIdsReconciled = 0;
-		const agentIdByMid = new Map<string, string>();
+		let identityRejected = 0;
+		const agentIdByNvmAgentId = new Map<string, string>();
+		const activeMarketplaceIds = new Set<string>();
 
-		// Dedup sellers by marketplaceId
+		// Dedup sellers by nvmAgentId
 		const deduped = new Map<string, NormalizedSeller>();
-		for (const s of sellers) deduped.set(s.marketplaceId, s);
+		for (const s of sellers) deduped.set(s.nvmAgentId, s);
 
 		for (const seller of deduped.values()) {
-			if (await reconcileMarketplaceId(tx, seller)) {
-				marketplaceIdsReconciled++;
+			const resolution = await resolvePersistedMarketplaceId(tx, seller);
+			for (const marketplaceId of resolution.protectedMarketplaceIds) {
+				activeMarketplaceIds.add(marketplaceId);
+			}
+			if (!resolution.marketplaceId) {
+				identityRejected++;
+				continue;
 			}
 			const rows = await tx.unsafe<{ id: string; marketplace_id: string }[]>(
 				`INSERT INTO agents (marketplace_id, team_id, nvm_agent_id, wallet_address, team_name, name, description, category, keywords, marketplace_ready, endpoint_url, services_sold, services_provided_per_req, price_per_request_display, price_metering_unit, price_display, api_created_at, api_updated_at, last_synced_at, is_active)
-				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW(),TRUE)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],TRUE,$10,$11,$12,$13,$14,$15,$16,NULL,NOW(),TRUE)
 				 ON CONFLICT (marketplace_id) DO UPDATE SET
 				   team_id=EXCLUDED.team_id, nvm_agent_id=EXCLUDED.nvm_agent_id, wallet_address=EXCLUDED.wallet_address,
 				   team_name=EXCLUDED.team_name, name=EXCLUDED.name, description=EXCLUDED.description, category=EXCLUDED.category,
-				   keywords=EXCLUDED.keywords, marketplace_ready=EXCLUDED.marketplace_ready, endpoint_url=EXCLUDED.endpoint_url,
+				   keywords=EXCLUDED.keywords, marketplace_ready=TRUE, endpoint_url=EXCLUDED.endpoint_url,
 				   services_sold=EXCLUDED.services_sold, services_provided_per_req=EXCLUDED.services_provided_per_req,
 				   price_per_request_display=EXCLUDED.price_per_request_display, price_metering_unit=EXCLUDED.price_metering_unit,
 				   price_display=EXCLUDED.price_display, api_created_at=EXCLUDED.api_created_at, api_updated_at=EXCLUDED.api_updated_at,
@@ -424,7 +435,7 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 				   OR agents.description IS DISTINCT FROM EXCLUDED.description
 				   OR agents.category IS DISTINCT FROM EXCLUDED.category
 				   OR agents.keywords IS DISTINCT FROM EXCLUDED.keywords
-				   OR agents.marketplace_ready IS DISTINCT FROM EXCLUDED.marketplace_ready
+				   OR agents.marketplace_ready IS DISTINCT FROM TRUE
 				   OR agents.endpoint_url IS DISTINCT FROM EXCLUDED.endpoint_url
 				   OR agents.services_sold IS DISTINCT FROM EXCLUDED.services_sold
 				   OR agents.services_provided_per_req IS DISTINCT FROM EXCLUDED.services_provided_per_req
@@ -435,19 +446,20 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 				   OR agents.api_updated_at IS DISTINCT FROM EXCLUDED.api_updated_at
 				   OR agents.is_active IS DISTINCT FROM TRUE
 				 RETURNING id, marketplace_id`,
-				[seller.marketplaceId, seller.teamId, seller.nvmAgentId, seller.walletAddress, seller.teamName, seller.name,
-				 seller.description, seller.category, seller.keywords, seller.marketplaceReady, seller.endpointUrl, seller.servicesSold,
+				[resolution.marketplaceId, seller.teamId, seller.nvmAgentId, seller.walletAddress, seller.teamName, seller.name,
+				 seller.description, seller.category, seller.keywords, seller.endpointUrl, seller.servicesSold,
 				 seller.servicesProvidedPerRequest, seller.pricePerRequestDisplay, seller.priceMeteringUnit, seller.priceDisplay,
-				 seller.apiCreatedAt, seller.apiUpdatedAt],
+				 seller.apiCreatedAt],
 			);
 			const row = rows[0] ?? (
 				await tx.unsafe<{ id: string; marketplace_id: string }[]>(
 					`SELECT id, marketplace_id FROM agents WHERE marketplace_id=$1 LIMIT 1`,
-					[seller.marketplaceId],
+					[resolution.marketplaceId],
 				)
 			)[0];
 			if (row) {
-				agentIdByMid.set(row.marketplace_id, row.id);
+				agentIdByNvmAgentId.set(seller.nvmAgentId, row.id);
+				activeMarketplaceIds.add(row.marketplace_id);
 				agentsUpserted++;
 			}
 		}
@@ -481,7 +493,7 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 		// Upsert agent_services + checkpoints
 		let agentServicesUpserted = 0;
 		for (const seller of deduped.values()) {
-			const agentId = agentIdByMid.get(seller.marketplaceId);
+			const agentId = agentIdByNvmAgentId.get(seller.nvmAgentId);
 			if (!agentId) continue;
 			for (const planId of seller.planIds) {
 				const p = planEnrichments.get(planId);
@@ -501,13 +513,16 @@ async function phase1MarketplaceSync(sql: Sql, nvmApiKey: string, nvmEnvironment
 		}
 
 		// Deactivate stale
-		const mids = [...deduped.keys()];
+		const mids = [...activeMarketplaceIds];
 		if (mids.length > 0) {
 			await tx.unsafe(`UPDATE agents SET is_active=FALSE WHERE is_active=TRUE AND NOT (marketplace_id = ANY($1::text[]))`, [mids]);
 			await tx.unsafe(`UPDATE plans SET is_active=FALSE WHERE is_active=TRUE AND NOT (nvm_plan_id = ANY($1::text[]))`, [allPlanIds]);
+		} else {
+			await tx.unsafe(`UPDATE agents SET is_active=FALSE WHERE is_active=TRUE`);
+			await tx.unsafe(`UPDATE plans SET is_active=FALSE WHERE is_active=TRUE`);
 		}
 
-		return { agentsUpserted, marketplaceIdsReconciled, plansUpserted: allPlanIds.length, agentServicesUpserted };
+		return { agentsUpserted, identityRejected, plansUpserted: allPlanIds.length, agentServicesUpserted };
 	});
 
 	return { fetchedSellers: data.sellers.length, normalized: sellers.length, plansEnriched: planEnrichments.size, ...stats };

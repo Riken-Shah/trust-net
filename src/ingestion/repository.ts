@@ -1,6 +1,6 @@
 import { type Pool, type PoolClient } from 'pg'
 
-import { type PlanEnrichment, type PersistResult, type NormalizedSeller } from './types.js'
+import { type NormalizedSeller, type PersistResult, type PlanEnrichment } from './types.js'
 
 export interface PersistMarketplaceInput {
   sellers: NormalizedSeller[]
@@ -13,6 +13,25 @@ interface AgentRow {
   marketplace_id: string
 }
 
+interface AgentIdentityCandidate extends AgentRow {
+  plan_overlap: number
+  endpoint_match: number
+  name_match: number
+  team_name_match: number
+  last_synced_at: Date | null
+}
+
+interface ActiveServiceKey {
+  agentId: string
+  planId: string
+}
+
+interface IdentityResolution {
+  marketplaceId: string | null
+  protectedMarketplaceIds: string[]
+  protectedServiceKeys: ActiveServiceKey[]
+}
+
 function serviceNameForPlan(seller: NormalizedSeller, plan: PlanEnrichment | undefined): string {
   if (plan?.name) {
     return plan.name
@@ -20,7 +39,147 @@ function serviceNameForPlan(seller: NormalizedSeller, plan: PlanEnrichment | und
   return seller.name
 }
 
-async function upsertAgent(client: PoolClient, seller: NormalizedSeller): Promise<AgentRow> {
+function compareCandidateRank(left: AgentIdentityCandidate, right: AgentIdentityCandidate): number {
+  const comparisons = [
+    left.plan_overlap - right.plan_overlap,
+    left.endpoint_match - right.endpoint_match,
+    left.name_match - right.name_match,
+    left.team_name_match - right.team_name_match,
+    (left.last_synced_at?.getTime() ?? -1) - (right.last_synced_at?.getTime() ?? -1),
+  ]
+
+  for (const comparison of comparisons) {
+    if (comparison !== 0) {
+      return comparison
+    }
+  }
+
+  return 0
+}
+
+function pickIdentityCandidate(candidates: AgentIdentityCandidate[]): AgentIdentityCandidate | null {
+  const firstCandidate = candidates[0]
+  if (!firstCandidate) {
+    return null
+  }
+  const secondCandidate = candidates[1]
+  if (!secondCandidate) {
+    return firstCandidate
+  }
+  return compareCandidateRank(firstCandidate, secondCandidate) > 0 ? firstCandidate : null
+}
+
+async function loadProtectedServiceKeys(client: PoolClient, agentIds: string[]): Promise<ActiveServiceKey[]> {
+  if (agentIds.length === 0) {
+    return []
+  }
+
+  const result = await client.query<{ agent_id: string; nvm_plan_id: string }>(
+    `
+      SELECT agent_id, nvm_plan_id
+      FROM agent_services
+      WHERE is_active = TRUE
+      AND agent_id = ANY($1::uuid[])
+    `,
+    [agentIds],
+  )
+
+  return result.rows.map((row) => ({
+    agentId: row.agent_id,
+    planId: row.nvm_plan_id,
+  }))
+}
+
+async function resolvePersistedMarketplaceId(client: PoolClient, seller: NormalizedSeller): Promise<IdentityResolution> {
+  const exactNvmMatches = await client.query<AgentRow>(
+    `
+      SELECT id, marketplace_id
+      FROM agents
+      WHERE nvm_agent_id = $1
+      ORDER BY last_synced_at DESC NULLS LAST, id ASC
+      LIMIT 2
+    `,
+    [seller.nvmAgentId],
+  )
+
+  const exactMatch = exactNvmMatches.rows[0]
+  if (exactNvmMatches.rows.length === 1 && exactMatch) {
+    return {
+      marketplaceId: exactMatch.marketplace_id,
+      protectedMarketplaceIds: [],
+      protectedServiceKeys: [],
+    }
+  }
+
+  if (exactNvmMatches.rows.length > 1) {
+    return {
+      marketplaceId: null,
+      protectedMarketplaceIds: exactNvmMatches.rows.map((row) => row.marketplace_id),
+      protectedServiceKeys: await loadProtectedServiceKeys(
+        client,
+        exactNvmMatches.rows.map((row) => row.id),
+      ),
+    }
+  }
+
+  const candidateResult = await client.query<AgentIdentityCandidate>(
+    `
+      SELECT
+        a.id,
+        a.marketplace_id,
+        COUNT(*) FILTER (WHERE services.nvm_plan_id = ANY($3::text[]))::int AS plan_overlap,
+        CASE WHEN a.endpoint_url IS NOT DISTINCT FROM $4 THEN 1 ELSE 0 END::int AS endpoint_match,
+        CASE WHEN a.name IS NOT DISTINCT FROM $5 THEN 1 ELSE 0 END::int AS name_match,
+        CASE WHEN a.team_name IS NOT DISTINCT FROM $6 THEN 1 ELSE 0 END::int AS team_name_match,
+        a.last_synced_at
+      FROM agents AS a
+      LEFT JOIN agent_services AS services
+        ON services.agent_id = a.id
+       AND services.is_active = TRUE
+      WHERE a.is_active = TRUE
+        AND a.team_id = $1
+        AND a.wallet_address = $2
+        AND a.nvm_agent_id IS NULL
+      GROUP BY a.id, a.marketplace_id, a.endpoint_url, a.name, a.team_name, a.last_synced_at
+      ORDER BY
+        plan_overlap DESC,
+        endpoint_match DESC,
+        name_match DESC,
+        team_name_match DESC,
+        a.last_synced_at DESC NULLS LAST,
+        a.id ASC
+    `,
+    [seller.teamId, seller.walletAddress, seller.planIds, seller.endpointUrl, seller.name, seller.teamName],
+  )
+
+  const match = pickIdentityCandidate(candidateResult.rows)
+  if (match) {
+    return {
+      marketplaceId: match.marketplace_id,
+      protectedMarketplaceIds: [],
+      protectedServiceKeys: [],
+    }
+  }
+
+  if (candidateResult.rows.length > 1) {
+    return {
+      marketplaceId: null,
+      protectedMarketplaceIds: candidateResult.rows.map((row) => row.marketplace_id),
+      protectedServiceKeys: await loadProtectedServiceKeys(
+        client,
+        candidateResult.rows.map((row) => row.id),
+      ),
+    }
+  }
+
+  return {
+    marketplaceId: seller.nvmAgentId,
+    protectedMarketplaceIds: [],
+    protectedServiceKeys: [],
+  }
+}
+
+async function upsertAgent(client: PoolClient, marketplaceId: string, seller: NormalizedSeller): Promise<AgentRow> {
   const result = await client.query<AgentRow>(
     `
       INSERT INTO agents (
@@ -47,8 +206,8 @@ async function upsertAgent(client: PoolClient, seller: NormalizedSeller): Promis
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8,
-        $9::text[], $10, $11, $12, $13, $14,
-        $15, $16, $17, $18, NOW(), TRUE
+        $9::text[], TRUE, $10, $11, $12, $13,
+        $14, $15, $16, NULL, NOW(), TRUE
       )
       ON CONFLICT (marketplace_id)
       DO UPDATE SET
@@ -60,7 +219,7 @@ async function upsertAgent(client: PoolClient, seller: NormalizedSeller): Promis
         description = EXCLUDED.description,
         category = EXCLUDED.category,
         keywords = EXCLUDED.keywords,
-        marketplace_ready = EXCLUDED.marketplace_ready,
+        marketplace_ready = TRUE,
         endpoint_url = EXCLUDED.endpoint_url,
         services_sold = EXCLUDED.services_sold,
         services_provided_per_req = EXCLUDED.services_provided_per_req,
@@ -84,7 +243,7 @@ async function upsertAgent(client: PoolClient, seller: NormalizedSeller): Promis
         OR agents.description IS DISTINCT FROM EXCLUDED.description
         OR agents.category IS DISTINCT FROM EXCLUDED.category
         OR agents.keywords IS DISTINCT FROM EXCLUDED.keywords
-        OR agents.marketplace_ready IS DISTINCT FROM EXCLUDED.marketplace_ready
+        OR agents.marketplace_ready IS DISTINCT FROM TRUE
         OR agents.endpoint_url IS DISTINCT FROM EXCLUDED.endpoint_url
         OR agents.services_sold IS DISTINCT FROM EXCLUDED.services_sold
         OR agents.services_provided_per_req IS DISTINCT FROM EXCLUDED.services_provided_per_req
@@ -97,7 +256,7 @@ async function upsertAgent(client: PoolClient, seller: NormalizedSeller): Promis
       RETURNING id, marketplace_id
     `,
     [
-      seller.marketplaceId,
+      marketplaceId,
       seller.teamId,
       seller.nvmAgentId,
       seller.walletAddress,
@@ -106,7 +265,6 @@ async function upsertAgent(client: PoolClient, seller: NormalizedSeller): Promis
       seller.description,
       seller.category,
       seller.keywords,
-      seller.marketplaceReady,
       seller.endpointUrl,
       seller.servicesSold,
       seller.servicesProvidedPerRequest,
@@ -114,18 +272,17 @@ async function upsertAgent(client: PoolClient, seller: NormalizedSeller): Promis
       seller.priceMeteringUnit,
       seller.priceDisplay,
       seller.apiCreatedAt,
-      seller.apiUpdatedAt,
     ],
   )
 
   const row = result.rows[0] ?? (
     await client.query<AgentRow>(
       `SELECT id, marketplace_id FROM agents WHERE marketplace_id = $1 LIMIT 1`,
-      [seller.marketplaceId],
+      [marketplaceId],
     )
   ).rows[0]
   if (!row) {
-    throw new Error(`Failed to upsert agent for marketplace_id=${seller.marketplaceId}.`)
+    throw new Error(`Failed to upsert agent for marketplace_id=${marketplaceId}.`)
   }
 
   return row
@@ -217,7 +374,7 @@ async function upsertAgentService(
   planId: string,
   name: string,
   description: string | null,
-  endpointUrl: string | null,
+  endpointUrl: string,
 ): Promise<void> {
   await client.query(
     `
@@ -343,20 +500,11 @@ export async function persistMarketplaceSnapshot(pool: Pool, input: PersistMarke
   try {
     await client.query('BEGIN')
 
-    const sellersByMarketplaceId = new Map<string, NormalizedSeller>()
+    const sellersByNvmAgentId = new Map<string, NormalizedSeller>()
     for (const seller of input.sellers) {
-      sellersByMarketplaceId.set(seller.marketplaceId, seller)
+      sellersByNvmAgentId.set(seller.nvmAgentId, seller)
     }
-    const sellers = [...sellersByMarketplaceId.values()]
-
-    const agentIdByMarketplaceId = new Map<string, string>()
-    let agentsUpserted = 0
-
-    for (const seller of sellers) {
-      const row = await upsertAgent(client, seller)
-      agentsUpserted += 1
-      agentIdByMarketplaceId.set(row.marketplace_id, row.id)
-    }
+    const sellers = [...sellersByNvmAgentId.values()]
 
     const planIdSet = new Set<string>()
     for (const seller of sellers) {
@@ -366,18 +514,40 @@ export async function persistMarketplaceSnapshot(pool: Pool, input: PersistMarke
     }
     const planIds = [...planIdSet]
 
+    const agentIdByNvmAgentId = new Map<string, string>()
+    const activeMarketplaceIdSet = new Set<string>()
+    const activeServiceKeySet = new Set<string>()
+    let agentsUpserted = 0
+
+    for (const seller of sellers) {
+      const resolution = await resolvePersistedMarketplaceId(client, seller)
+
+      for (const marketplaceId of resolution.protectedMarketplaceIds) {
+        activeMarketplaceIdSet.add(marketplaceId)
+      }
+      for (const serviceKey of resolution.protectedServiceKeys) {
+        activeServiceKeySet.add(`${serviceKey.agentId}:${serviceKey.planId}`)
+      }
+
+      if (!resolution.marketplaceId) {
+        continue
+      }
+
+      const row = await upsertAgent(client, resolution.marketplaceId, seller)
+      agentsUpserted += 1
+      agentIdByNvmAgentId.set(seller.nvmAgentId, row.id)
+      activeMarketplaceIdSet.add(row.marketplace_id)
+    }
+
     for (const planId of planIds) {
       await upsertPlan(client, planId, input.planEnrichments.get(planId), input.chainNetwork)
     }
 
-    const activeServiceAgentIds: string[] = []
-    const activeServicePlanIds: string[] = []
     let agentServicesUpserted = 0
-
     for (const seller of sellers) {
-      const agentId = agentIdByMarketplaceId.get(seller.marketplaceId)
+      const agentId = agentIdByNvmAgentId.get(seller.nvmAgentId)
       if (!agentId) {
-        throw new Error(`Missing agent row for marketplace_id=${seller.marketplaceId}.`)
+        continue
       }
 
       for (const planId of seller.planIds) {
@@ -391,8 +561,7 @@ export async function persistMarketplaceSnapshot(pool: Pool, input: PersistMarke
           seller.endpointUrl,
         )
         agentServicesUpserted += 1
-        activeServiceAgentIds.push(agentId)
-        activeServicePlanIds.push(planId)
+        activeServiceKeySet.add(`${agentId}:${planId}`)
       }
     }
 
@@ -406,8 +575,15 @@ export async function persistMarketplaceSnapshot(pool: Pool, input: PersistMarke
       burnCheckpointsInserted += await ensureBurnCheckpoint(client, planId, input.chainNetwork)
     }
 
-    const activeMarketplaceIds = sellers.map((seller) => seller.marketplaceId)
-    const agentsDeactivated = await deactivateAgentsNotInSnapshot(client, activeMarketplaceIds)
+    const activeServiceAgentIds: string[] = []
+    const activeServicePlanIds: string[] = []
+    for (const serviceKey of activeServiceKeySet) {
+      const separator = serviceKey.indexOf(':')
+      activeServiceAgentIds.push(serviceKey.slice(0, separator))
+      activeServicePlanIds.push(serviceKey.slice(separator + 1))
+    }
+
+    const agentsDeactivated = await deactivateAgentsNotInSnapshot(client, [...activeMarketplaceIdSet])
     const plansDeactivated = await deactivatePlansNotInSnapshot(client, planIds)
     const agentServicesDeactivated = await deactivateServicesNotInSnapshot(
       client,

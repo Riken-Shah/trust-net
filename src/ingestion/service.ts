@@ -1,7 +1,7 @@
 import { type Pool } from 'pg'
 
 import { loadIngestionConfig, type IngestionConfig } from './config.js'
-import { fetchMarketplaceSnapshot } from './marketplaceClient.js'
+import { fetchDiscoverSnapshot } from './marketplaceClient.js'
 import { normalizeSellers } from './normalizer.js'
 import { enrichPlans, type PlanGetter } from './planEnrichmentClient.js'
 import { persistMarketplaceSnapshot } from './repository.js'
@@ -21,9 +21,10 @@ export async function runMarketplaceIngestion(
   const startedAt = options.now?.() ?? new Date()
   const config = options.config ?? loadIngestionConfig()
 
-  const snapshot = await fetchMarketplaceSnapshot(
+  const snapshot = await fetchDiscoverSnapshot(
     {
-      marketplaceApiUrl: config.marketplaceApiUrl,
+      discoverApiUrl: config.discoverApiUrl,
+      nvmApiKey: config.nvmApiKey,
       timeoutMs: config.httpTimeoutMs,
       retryCount: config.retryCount,
     },

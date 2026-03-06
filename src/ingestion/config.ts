@@ -1,13 +1,13 @@
 import { type SupportedNvmEnvironment } from './planEnrichmentClient.js'
 
-const DEFAULT_MARKETPLACE_API_URL = 'https://nevermined.ai/hackathon/register/api/marketplace?side=all'
+const DEFAULT_DISCOVER_API_URL = 'https://nevermined.ai/hackathon/register/api/discover?side=all'
 const DEFAULT_INGEST_INTERVAL_SECONDS = 300
 const DEFAULT_INGEST_HTTP_TIMEOUT_MS = 15000
 const DEFAULT_INGEST_RETRY_COUNT = 2
 const DEFAULT_PLAN_ENRICH_CONCURRENCY = 5
 
 export interface IngestionConfig {
-  marketplaceApiUrl: string
+  discoverApiUrl: string
   intervalSeconds: number
   httpTimeoutMs: number
   retryCount: number
@@ -62,7 +62,7 @@ function resolveChainNetwork(env: SupportedNvmEnvironment): string {
 }
 
 export function loadIngestionConfig(env: NodeJS.ProcessEnv = process.env): IngestionConfig {
-  const marketplaceApiUrl = asTrimmedEnv('MARKETPLACE_API_URL', env) || DEFAULT_MARKETPLACE_API_URL
+  const discoverApiUrl = asTrimmedEnv('DISCOVER_API_URL', env) || DEFAULT_DISCOVER_API_URL
   const intervalSeconds = parsePositiveInt(
     asTrimmedEnv('INGEST_INTERVAL_SECONDS', env),
     'INGEST_INTERVAL_SECONDS',
@@ -86,13 +86,13 @@ export function loadIngestionConfig(env: NodeJS.ProcessEnv = process.env): Inges
 
   const nvmApiKey = asTrimmedEnv('NVM_API_KEY', env)
   if (!nvmApiKey) {
-    throw new Error('NVM_API_KEY is required for plan enrichment.')
+    throw new Error('NVM_API_KEY is required for discover fetch and plan enrichment.')
   }
 
   const nvmEnvironment = parseNvmEnvironment(asTrimmedEnv('NVM_ENVIRONMENT', env))
 
   return {
-    marketplaceApiUrl,
+    discoverApiUrl,
     intervalSeconds,
     httpTimeoutMs,
     retryCount,
