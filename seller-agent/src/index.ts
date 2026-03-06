@@ -400,82 +400,118 @@ export default {
 							id: body.id ?? null,
 						});
 					}
-				}
 
-				// Handle tools/call for submit_review (no payment required)
-				if (body.method === "tools/call" && (body.params as any)?.name === "submit_review") {
-					const args = (body.params as any)?.arguments ?? {};
-					try {
-						const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
-
-						if (!args.agent_id || !args.reviewer_address || !args.verification_tx || !args.score) {
-							await sql.end();
+					if (toolName === "submit_review" && planId) {
+						const paymentRequired = buildPaymentRequired(planId, { endpoint: "/mcp", agentId, httpVerb: "POST" });
+						const verification = await verifyPermissions(paymentRequired, token, CREDITS_PER_CALL);
+						if (!verification.isValid) {
 							return Response.json({
 								jsonrpc: "2.0",
-								error: { code: -32602, message: "Missing required fields: agent_id, reviewer_address, verification_tx, score" },
+								error: { code: -32000, message: verification.invalidReason || "Payment verification failed" },
 								id: body.id ?? null,
-							}, { status: 400 });
+							}, { status: 402 });
 						}
 
-						const txCheck = await verifyBurnTx(args.verification_tx, args.reviewer_address);
-						if (!txCheck.valid) {
+						const args = (body.params as any)?.arguments ?? {};
+						try {
+							const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
+
+							if (!args.agent_id || !args.reviewer_address || !args.verification_tx || !args.score) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32602, message: "Missing required fields: agent_id, reviewer_address, verification_tx, score" },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+
+							const txCheck = await verifyBurnTx(args.verification_tx, args.reviewer_address);
+							if (!txCheck.valid) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32000, message: `Transaction verification failed: ${txCheck.error}` },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+
+							const rows = await sql.unsafe(INSERT_REVIEW_SQL, [
+								args.agent_id, args.reviewer_address, args.verification_tx, args.score,
+								args.score_accuracy ?? null, args.score_speed ?? null,
+								args.score_value ?? null, args.score_reliability ?? null,
+								args.comment ?? null,
+							]);
 							await sql.end();
+
+							const settlement = await settlePermissions(paymentRequired, token, CREDITS_PER_CALL, verification.agentRequestId);
+
 							return Response.json({
 								jsonrpc: "2.0",
-								error: { code: -32000, message: `Transaction verification failed: ${txCheck.error}` },
+								result: {
+									content: [{ type: "text", text: JSON.stringify({ review: rows[0] }, null, 2) }],
+									_meta: {
+										creditsRedeemed: settlement.creditsRedeemed,
+										remainingBalance: settlement.remainingBalance,
+										transaction: settlement.transaction,
+									},
+								},
 								id: body.id ?? null,
-							}, { status: 400 });
+							});
+						} catch (err) {
+							return Response.json({
+								jsonrpc: "2.0",
+								error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+								id: body.id ?? null,
+							});
 						}
-
-						const rows = await sql.unsafe(INSERT_REVIEW_SQL, [
-							args.agent_id, args.reviewer_address, args.verification_tx, args.score,
-							args.score_accuracy ?? null, args.score_speed ?? null,
-							args.score_value ?? null, args.score_reliability ?? null,
-							args.comment ?? null,
-						]);
-						await sql.end();
-
-						return Response.json({
-							jsonrpc: "2.0",
-							result: { content: [{ type: "text", text: JSON.stringify({ review: rows[0] }, null, 2) }] },
-							id: body.id ?? null,
-						});
-					} catch (err) {
-						return Response.json({
-							jsonrpc: "2.0",
-							error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
-							id: body.id ?? null,
-						});
 					}
-				}
 
-				// Handle tools/call for get_reviews (no payment required)
-				if (body.method === "tools/call" && (body.params as any)?.name === "get_reviews") {
-					const args = (body.params as any)?.arguments ?? {};
-					try {
-						const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
-						if (!args.agent_id) {
-							await sql.end();
+					if (toolName === "get_reviews" && planId) {
+						const paymentRequired = buildPaymentRequired(planId, { endpoint: "/mcp", agentId, httpVerb: "POST" });
+						const verification = await verifyPermissions(paymentRequired, token, CREDITS_PER_CALL);
+						if (!verification.isValid) {
 							return Response.json({
 								jsonrpc: "2.0",
-								error: { code: -32602, message: "agent_id is required" },
+								error: { code: -32000, message: verification.invalidReason || "Payment verification failed" },
 								id: body.id ?? null,
-							}, { status: 400 });
+							}, { status: 402 });
 						}
-						const rows = await sql.unsafe(GET_REVIEWS_SQL, [args.agent_id]);
-						await sql.end();
 
-						return Response.json({
-							jsonrpc: "2.0",
-							result: { content: [{ type: "text", text: JSON.stringify({ reviews: rows }, null, 2) }] },
-							id: body.id ?? null,
-						});
-					} catch (err) {
-						return Response.json({
-							jsonrpc: "2.0",
-							error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
-							id: body.id ?? null,
-						});
+						const args = (body.params as any)?.arguments ?? {};
+						try {
+							const sql = postgres(env.HYPERDRIVE.connectionString, { max: 1, idle_timeout: 5, prepare: false });
+							if (!args.agent_id) {
+								await sql.end();
+								return Response.json({
+									jsonrpc: "2.0",
+									error: { code: -32602, message: "agent_id is required" },
+									id: body.id ?? null,
+								}, { status: 400 });
+							}
+							const rows = await sql.unsafe(GET_REVIEWS_SQL, [args.agent_id]);
+							await sql.end();
+
+							const settlement = await settlePermissions(paymentRequired, token, CREDITS_PER_CALL, verification.agentRequestId);
+
+							return Response.json({
+								jsonrpc: "2.0",
+								result: {
+									content: [{ type: "text", text: JSON.stringify({ reviews: rows }, null, 2) }],
+									_meta: {
+										creditsRedeemed: settlement.creditsRedeemed,
+										remainingBalance: settlement.remainingBalance,
+										transaction: settlement.transaction,
+									},
+								},
+								id: body.id ?? null,
+							});
+						} catch (err) {
+							return Response.json({
+								jsonrpc: "2.0",
+								error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+								id: body.id ?? null,
+							});
+						}
 					}
 				}
 
