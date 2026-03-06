@@ -136,6 +136,11 @@ const payments = Payments.getInstance({
 // Creates a fresh McpServer + transport per request to support concurrent connections.
 // Each request gets its own Protocol instance, avoiding "Already connected" errors.
 
+payments.mcp.configure({
+  agentId: process.env.SELLER_AGENT_ID || 'seller-agent',
+  serverName: 'seller-agent-service',
+})
+
 function createMcpServerInstance(): McpServer {
   const server = new McpServer({
     name: 'seller-agent-service',
