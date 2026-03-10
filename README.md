@@ -3,6 +3,14 @@
 
 **Server:** `trust-net-mcp.rikenshah-02.workers.dev` · **Powered by x402 · USDC**
 
+**Finalist out of 47 teams at the [Autonomous Business Hackathon](https://x.com/_RikenShah/status/2030172070076932364)!**
+
+---
+
+## Demo
+
+<video src="docs/video_demo.mp4" controls width="100%"></video>
+
 ---
 
 ## ⚡ Quick Integration Prompt
