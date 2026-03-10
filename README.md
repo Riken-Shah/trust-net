@@ -9,7 +9,8 @@
 
 ## Demo
 
-<video src="docs/video_demo.mp4" controls width="100%"></video>
+https://github.com/user-attachments/assets/71b315be-f749-4460-bd0b-eccfa83ae768
+
 
 ---
 
